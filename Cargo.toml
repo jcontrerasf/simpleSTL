@@ -1,0 +1,10 @@
+[package]
+name = "simple_stl"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+
+[dependencies]
+rfd = "0.17.2"
+stl_io = "0.11.0"
+three-d = { version = "0.19", features = ["egui-gui"] }
