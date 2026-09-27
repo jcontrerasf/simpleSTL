@@ -37,6 +37,8 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
 - CMake, un compilador de C++ y git, para compilar [Manifold](https://github.com/elalish/manifold).
 - OpenGL 3.3.
 - En Linux, `xdg-desktop-portal`, para los diálogos de abrir y guardar archivos.
+- En Linux, para compilar: `pkg-config` y las cabeceras de Wayland (`libwayland-dev`
+  en Debian/Ubuntu).
 
 ## Compilar
 
