@@ -131,6 +131,20 @@ impl MeshData {
             / 6.0
     }
 
+    /// Centro de masa de un sólido homogéneo: suma de los centroides de los tetraedros
+    /// (origen, a, b, c) ponderados por su volumen con signo. Requiere malla cerrada.
+    pub fn centroid(&self) -> Vec3 {
+        let mut weighted = vec3(0.0, 0.0, 0.0);
+        let mut total = 0.0;
+        for &[a, b, c] in &self.triangles {
+            let (pa, pb, pc) = (self.vertex(a), self.vertex(b), self.vertex(c));
+            let volume = pa.dot(pb.cross(pc));
+            weighted += (pa + pb + pc) * (volume / 4.0);
+            total += volume;
+        }
+        if total.abs() > f32::EPSILON { weighted / total } else { self.bounding_box().0 }
+    }
+
     /// Malla para el renderer con sombreado plano: cada triángulo tiene sus propios
     /// vértices para que la normal sea la de la cara (lo típico en piezas CAD).
     pub fn to_cpu_mesh(&self) -> CpuMesh {
@@ -163,6 +177,7 @@ mod tests {
         assert_eq!(mesh.triangles.len(), 12);
         assert!(mesh.topology().is_closed());
         assert!((mesh.volume().abs() - 8000.0).abs() < 1e-2);
+        assert!((mesh.centroid() - vec3(10.0, 10.0, 10.0)).magnitude() < 1e-3);
     }
 
     #[test]

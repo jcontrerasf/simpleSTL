@@ -77,6 +77,12 @@ pub fn split(mesh: &MeshData, normal: [f64; 3], offset: f64) -> Result<(Option<M
     Ok((from_manifold(&positive), from_manifold(&negative)))
 }
 
+/// Envolvente convexa de un conjunto de puntos.
+pub fn convex_hull(points: &[[f32; 3]]) -> Option<MeshData> {
+    let points: Vec<[f64; 3]> = points.iter().map(|p| p.map(|c| c as f64)).collect();
+    from_manifold(&Manifold::hull_pts(&points))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +117,25 @@ mod tests {
         assert!(top.topology().is_closed() && bottom.topology().is_closed());
         assert!((top.volume().abs() - 20.0 * 20.0 * 15.0).abs() < 1e-2);
         assert!((bottom.volume().abs() - 20.0 * 20.0 * 5.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn hull_of_cube_is_the_cube() {
+        let hull = convex_hull(&cube().vertices).unwrap();
+        assert!(hull.topology().is_closed());
+        assert!((hull.volume().abs() - 8000.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn tilted_cut_preserves_volume() {
+        let normal: [f64; 3] = [1.0, 1.0, 2.0];
+        let len = normal.iter().map(|c| c * c).sum::<f64>().sqrt();
+        let normal = normal.map(|c| c / len);
+        // Plano por el centro del cubo (10, 10, 10).
+        let offset = 10.0 * (normal[0] + normal[1] + normal[2]);
+        let (a, b) = split(&cube(), normal, offset).unwrap();
+        let total = a.unwrap().volume().abs() + b.unwrap().volume().abs();
+        assert!((total - 8000.0).abs() < 1e-1);
     }
 
     #[test]

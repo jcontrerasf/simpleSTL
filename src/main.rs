@@ -3,6 +3,8 @@ mod csg;
 mod ground;
 mod manipulator;
 mod mesh;
+mod place_on_face;
+mod toolbar;
 mod viewcube;
 
 use std::path::{Path, PathBuf};
@@ -14,8 +16,10 @@ use three_d::*;
 use camera::CameraController;
 use csg::BooleanOp;
 use ground::Ground;
-use manipulator::{Manipulator, Mode, Pose};
+use manipulator::{GizmoSetup, Manipulator, Pose};
 use mesh::{MeshData, Topology};
+use place_on_face::Facet;
+use toolbar::Tool;
 
 const PALETTE: [[u8; 3]; 6] = [
     [120, 160, 220],
@@ -96,17 +100,42 @@ struct App {
     bool_a: usize,
     bool_b: usize,
     bool_op: BooleanOp,
-    cut_axis: usize,
-    /// Posición del plano de corte como fracción (0..1) de la caja del objeto seleccionado.
-    cut_fraction: f32,
-    show_cut_plane: bool,
-    manipulator_mode: Mode,
+    /// Herramienta activa de la barra superior (solo con un objeto seleccionado).
+    tool: Option<Tool>,
+    /// Plano de corte: `translation` es un punto del plano y `rotation * Z` su normal.
+    cut_pose: Pose,
+    /// Caras para "Apoyar en cara" del objeto seleccionado.
+    facets: Option<FacetCache>,
     grid_spacing: f32,
     /// Objeto que se está renombrando en la lista, con el texto en edición.
     renaming: Option<(usize, String)>,
     /// El campo de renombrar debe tomar el foco en el próximo cuadro (solo al abrirse:
     /// pedirlo siempre impediría que Enter lo suelte y confirme).
     rename_needs_focus: bool,
+}
+
+/// Caras de "Apoyar en cara" calculadas para un objeto en una pose dada, con su dibujo.
+struct FacetCache {
+    object: usize,
+    pose: Pose,
+    facets: Vec<Facet>,
+    overlays: Vec<Gm<Mesh, ColorMaterial>>,
+    hovered: Option<usize>,
+}
+
+const FACET_COLOR: Srgba = Srgba::new(255, 150, 40, 90);
+const FACET_HOVER_COLOR: Srgba = Srgba::new(255, 220, 60, 200);
+
+/// Superposición translúcida de una cara, levantada `lift` sobre la superficie para no
+/// pelear en profundidad con la malla.
+fn facet_overlay(context: &Context, facet: &Facet, lift: f32) -> Gm<Mesh, ColorMaterial> {
+    let offset = facet.normal * lift;
+    let positions = facet.triangles.iter().flat_map(|t| t.map(|p| p + offset)).collect();
+    let cpu = CpuMesh { positions: Positions::F32(positions), ..Default::default() };
+    Gm::new(
+        Mesh::new(context, &cpu),
+        ColorMaterial::new_transparent(context, &CpuMaterial { albedo: FACET_COLOR, ..Default::default() }),
+    )
 }
 
 /// Plano de corte ya resuelto en coordenadas del mundo.
@@ -136,25 +165,74 @@ impl App {
         }
     }
 
+    /// Plano de corte activo (solo con la herramienta Corte y un objeto seleccionado).
     fn cut_plane(&self) -> Option<CutPlane> {
+        if self.tool != Some(Tool::Cut) {
+            return None;
+        }
         let object = self.selected?;
         let (min, max) = self.objects.get(object)?.world_bbox;
-        let axis = self.cut_axis;
-        let offset = min[axis] + self.cut_fraction * (max[axis] - min[axis]);
-
-        let mut normal = [0.0; 3];
-        normal[axis] = 1.0;
-        let mut center = (min + max) * 0.5;
-        center[axis] = offset;
-        // El cuadrado base está en el plano XY (normal +Z); se rota para que su normal sea el eje elegido.
-        let rotation = match axis {
-            0 => Mat4::from_angle_y(degrees(90.0)),
-            1 => Mat4::from_angle_x(degrees(-90.0)),
-            _ => Mat4::identity(),
-        };
+        let n = self.cut_pose.rotation * vec3(0.0, 0.0, 1.0);
+        // El cuadrado base (2×2, normal +Z) se escala para cubrir el objeto.
         let size = (max - min).magnitude() * 0.6;
-        let transform = Mat4::from_translation(center) * rotation * Mat4::from_scale(size);
-        Some(CutPlane { object, normal, offset: offset as f64, transform })
+        Some(CutPlane {
+            object,
+            normal: [n.x as f64, n.y as f64, n.z as f64],
+            offset: n.dot(self.cut_pose.translation) as f64,
+            transform: self.cut_pose.matrix() * Mat4::from_scale(size),
+        })
+    }
+
+    /// Ajustes al cambiar de herramienta o de objeto seleccionado.
+    fn on_tool_or_selection_changed(&mut self) {
+        let Some(selected) = self.selected else {
+            self.tool = None;
+            self.facets = None;
+            return;
+        };
+        match self.tool {
+            Some(Tool::Cut) => {
+                // Plano horizontal por el centro del objeto.
+                let (min, max) = self.objects[selected].world_bbox;
+                self.cut_pose = Pose::at((min + max) * 0.5);
+            }
+            Some(Tool::Boolean) => {
+                self.bool_a = selected;
+                self.bool_b = (0..self.objects.len()).find(|&i| i != selected).unwrap_or(selected);
+            }
+            _ => {}
+        }
+        self.facets = None;
+    }
+
+    /// Recalcula las caras de "Apoyar en cara" si la herramienta está activa y el objeto
+    /// seleccionado (o su pose) cambió desde el último cálculo.
+    fn update_facets(&mut self) {
+        let (Some(Tool::PlaceOnFace), Some(i)) = (self.tool, self.selected) else {
+            self.facets = None;
+            return;
+        };
+        let obj = &self.objects[i];
+        if self.facets.as_ref().is_some_and(|c| c.object == i && c.pose == obj.pose) {
+            return;
+        }
+        let facets = place_on_face::find_facets(&obj.world_mesh());
+        let (min, max) = obj.world_bbox;
+        let lift = (max - min).magnitude() * 2e-3;
+        let overlays = facets.iter().map(|f| facet_overlay(&self.context, f, lift)).collect();
+        self.facets = Some(FacetCache { object: i, pose: obj.pose, facets, overlays, hovered: None });
+    }
+
+    /// Rota el objeto (sobre su centro) para que la cara de normal `normal` mire hacia abajo
+    /// y lo baja o sube hasta que quede apoyado en z = 0.
+    fn place_on_face(&mut self, object: usize, normal: Vec3) {
+        let obj = &mut self.objects[object];
+        let mut pose = obj.pose;
+        pose.rotation = (place_on_face::rotation_to_floor(normal) * pose.rotation).normalize();
+        obj.set_pose(pose);
+        pose.translation.z -= obj.world_bbox.0.z;
+        obj.set_pose(pose);
+        self.status = format!("{} apoyado en una cara", obj.name);
     }
 
     fn apply_boolean(&mut self) {
@@ -178,7 +256,6 @@ impl App {
 
     fn apply_cut(&mut self, plane: CutPlane) {
         let obj = &self.objects[plane.object];
-        let axis = AXES[self.cut_axis];
         let base = obj.name.clone();
         let start = Instant::now();
         match csg::split(&obj.world_mesh(), plane.normal, plane.offset) {
@@ -189,9 +266,9 @@ impl App {
                 }
                 self.objects[plane.object].visible = false;
                 for (half, sign) in [(positive, "+"), (negative, "−")] {
-                    self.add_object(format!("{base} ({sign}{axis})"), half.unwrap());
+                    self.add_object(format!("{base} ({sign})"), half.unwrap());
                 }
-                self.status = format!("Corte en {axis} = {:.2} en {:.0?}", plane.offset, start.elapsed());
+                self.status = format!("Corte en {:.0?}", start.elapsed());
             }
             Err(e) => self.status = e,
         }
@@ -259,10 +336,9 @@ fn main() {
         bool_a: 0,
         bool_b: 1,
         bool_op: BooleanOp::Difference,
-        cut_axis: 2,
-        cut_fraction: 0.5,
-        show_cut_plane: true,
-        manipulator_mode: Mode::Both,
+        tool: None,
+        cut_pose: Pose::at(vec3(0.0, 0.0, 0.0)),
+        facets: None,
         grid_spacing: ground.spacing,
         renaming: None,
         rename_needs_focus: false,
@@ -294,11 +370,12 @@ fn main() {
         };
         camera.set_viewport(viewport);
 
-        manipulator.mode = app.manipulator_mode;
         manipulator.track_input(&frame_input.events, dpr, window_viewport.height);
         let mut dragged_pose = None;
         let mut cube_action = None;
-        let mut cube_rect = egui::Rect::NOTHING;
+        // Zonas del visor tapadas por controles: ahí los clics no seleccionan en la escena.
+        let mut blocked: Vec<egui::Rect> = Vec::new();
+        let (tool_before, selected_before) = (app.tool, app.selected);
 
         gui.update(
             &mut frame_input.events,
@@ -317,10 +394,15 @@ fn main() {
                     egui::pos2(panel_width, 0.0),
                     egui::pos2(window_viewport.width as f32 / dpr, window_viewport.height as f32 / dpr),
                 );
-                let pose = app.selected.and_then(|i| app.objects.get(i)).filter(|o| o.visible).map(|o| o.pose);
-                cube_rect = viewcube::rect(view_rect);
+                let cube_rect = viewcube::rect(view_rect);
                 cube_action = viewcube::show(ui.ctx(), cube_rect, &camera);
-                dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, cube_rect, pose);
+                blocked.push(cube_rect);
+                if app.selected.is_some() {
+                    // La barra usa el ancho libre a la izquierda del cubo de vista.
+                    let max_width = (cube_rect.min.x - view_rect.min.x - 32.0).max(120.0);
+                    blocked.push(toolbar::show(ui.ctx(), view_rect, max_width, &mut app.tool));
+                }
+                dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, &blocked, gizmo_target(&app));
             },
         );
 
@@ -330,7 +412,28 @@ fn main() {
             extra_frames = extra_frames.max(2);
         }
         if let (Some(pose), Some(i)) = (dragged_pose, app.selected) {
-            app.objects[i].set_pose(pose);
+            if app.tool == Some(Tool::Cut) {
+                app.cut_pose = pose;
+            } else {
+                app.objects[i].set_pose(pose);
+            }
+        }
+        // Atajos de la barra (egui ya marcó como manejadas las teclas si hay un campo de texto activo).
+        if app.selected.is_some() {
+            for event in frame_input.events.iter_mut() {
+                if let Event::KeyPress { kind, modifiers, handled } = event {
+                    if *handled || modifiers.ctrl || modifiers.alt {
+                        continue;
+                    }
+                    if *kind == Key::Escape {
+                        app.tool = None;
+                        *handled = true;
+                    } else if let Some(tool) = Tool::ALL.into_iter().find(|t| t.key() == *kind) {
+                        app.tool = if app.tool == Some(tool) { None } else { Some(tool) };
+                        *handled = true;
+                    }
+                }
+            }
         }
         if let Some((i, pose)) = actions.pose {
             app.objects[i].set_pose(pose);
@@ -340,15 +443,44 @@ fn main() {
             Some(viewcube::Action::Orbit(delta)) => control.orbit_by_drag(&mut camera, delta),
             None => {}
         }
+        // Posición física (three-d) en el visor libre de controles, si corresponde.
+        let in_scene = |p: PhysicalPoint| {
+            let point = egui::pos2(p.x / dpr, (window_viewport.height as f32 - p.y) / dpr);
+            p.x >= viewport.x as f32 && !blocked.iter().any(|r| r.contains(point))
+        };
+
+        app.update_facets();
+        // Resaltar la cara bajo el cursor.
+        let last_motion = frame_input.events.iter().rev().find_map(|e| match e {
+            Event::MouseMotion { position, .. } => Some(*position),
+            _ => None,
+        });
+        if let (Some(cache), Some(p)) = (app.facets.as_mut(), last_motion) {
+            let hovered = if in_scene(p) { pick_facet(&context, &camera, cache, p) } else { None };
+            if hovered != cache.hovered {
+                for (k, overlay) in cache.overlays.iter_mut().enumerate() {
+                    overlay.material.color = if Some(k) == hovered { FACET_HOVER_COLOR } else { FACET_COLOR };
+                }
+                cache.hovered = hovered;
+            }
+        }
+
         if let Some(click) = manipulator.consume_events(&mut frame_input.events) {
             let p = click.position;
-            let in_cube = cube_rect.contains(egui::pos2(p.x / dpr, (window_viewport.height as f32 - p.y) / dpr));
-            if p.x >= viewport.x as f32 && !in_cube {
-                // Selección con el ratón: el índice de geometría es la posición en `visible`.
-                let visible: Vec<usize> = (0..app.objects.len()).filter(|&i| app.objects[i].visible).collect();
-                let geometries = visible.iter().map(|&i| &app.objects[i].model.geometry);
-                if let Ok(hit) = pick(&context, &camera, click.position, geometries, Cull::None) {
-                    app.selected = hit.map(|h| visible[h.geometry_id as usize]);
+            if in_scene(p) {
+                // Con "Apoyar en cara", un clic sobre una cara resaltada tiene prioridad.
+                let facet = app.facets.as_ref().and_then(|c| {
+                    pick_facet(&context, &camera, c, p).map(|k| (c.object, c.facets[k].normal))
+                });
+                if let Some((object, normal)) = facet {
+                    app.place_on_face(object, normal);
+                } else {
+                    // Selección con el ratón: el índice de geometría es la posición en `visible`.
+                    let visible: Vec<usize> = (0..app.objects.len()).filter(|&i| app.objects[i].visible).collect();
+                    let geometries = visible.iter().map(|&i| &app.objects[i].model.geometry);
+                    if let Ok(hit) = pick(&context, &camera, click.position, geometries, Cull::None) {
+                        app.selected = hit.map(|h| visible[h.geometry_id as usize]);
+                    }
                 }
             }
         }
@@ -394,13 +526,15 @@ fn main() {
         if actions.boolean {
             app.apply_boolean();
         }
-        let cut_plane = app.cut_plane();
         if actions.cut {
-            if let Some(plane) = cut_plane {
+            if let Some(plane) = app.cut_plane() {
                 app.apply_cut(plane);
             }
         }
-        let cut_plane = app.cut_plane().filter(|_| app.show_cut_plane);
+        if app.tool != tool_before || app.selected != selected_before {
+            app.on_tool_or_selection_changed();
+        }
+        let cut_plane = app.cut_plane();
 
         // El encuadre inicial espera a que el panel tenga su ancho real (no existe en el primer cuadro).
         if actions.fit || (needs_fit && viewport.x > 0) {
@@ -421,6 +555,9 @@ fn main() {
         let mut scene: Vec<&dyn Object> = app.objects.iter().filter(|o| o.visible).map(|o| &o.model as &dyn Object).collect();
         scene.push(&axes);
         scene.extend(ground.objects());
+        if let Some(cache) = &app.facets {
+            scene.extend(cache.overlays.iter().map(|o| o as &dyn Object));
+        }
         if let Some(plane) = &cut_plane {
             cut_preview.set_transformation(plane.transform);
             scene.push(&cut_preview);
@@ -438,9 +575,24 @@ fn main() {
     });
 }
 
+/// Qué manipula el gizmo según la herramienta activa: el objeto, el plano de corte o nada.
+fn gizmo_target(app: &App) -> Option<(Pose, GizmoSetup)> {
+    let obj = app.selected.and_then(|i| app.objects.get(i)).filter(|o| o.visible)?;
+    match app.tool? {
+        Tool::Move => Some((obj.pose, GizmoSetup::translate())),
+        Tool::Rotate => Some((obj.pose, GizmoSetup::rotate())),
+        Tool::Cut => Some((app.cut_pose, GizmoSetup::cut_plane())),
+        Tool::Boolean | Tool::PlaceOnFace => None,
+    }
+}
+
+/// Índice de la cara de "Apoyar en cara" bajo el píxel dado, si hay alguna.
+fn pick_facet(context: &Context, camera: &Camera, cache: &FacetCache, pixel: PhysicalPoint) -> Option<usize> {
+    let geometries = cache.overlays.iter().map(|o| &o.geometry);
+    pick(context, camera, pixel, geometries, Cull::None).ok().flatten().map(|h| h.geometry_id as usize)
+}
+
 fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
-    ui.separator();
-    ui.label(egui::RichText::new("Booleanas").strong());
     if app.objects.len() < 2 {
         ui.weak("Se necesitan dos objetos");
         return;
@@ -645,54 +797,90 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 ui.end_row();
             }
         });
-
-        let mut pose = obj.pose;
-        let mut pose_changed = false;
-        ui.horizontal(|ui| {
-            ui.label("Posición");
-            for c in [&mut pose.translation.x, &mut pose.translation.y, &mut pose.translation.z] {
-                pose_changed |= ui.add(egui::DragValue::new(c).speed(0.1).max_decimals(2)).changed();
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Manipulador");
-            for mode in Mode::ALL {
-                ui.radio_value(&mut app.manipulator_mode, mode, mode.label());
-            }
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Restablecer rotación").clicked() {
-                pose.rotation = Pose::at(pose.translation).rotation;
-                pose_changed = true;
-            }
-        });
-        if pose_changed {
-            actions.pose = app.selected.map(|i| (i, pose));
-        }
-        ui.weak("Ctrl al arrastrar: pasos de 1 / 15°");
-
-        let closed = obj.topology.is_closed();
-
-        ui.separator();
-        ui.label(egui::RichText::new("Corte por plano").strong());
-        ui.horizontal(|ui| {
-            ui.label("Normal");
-            for (i, name) in AXES.iter().enumerate() {
-                ui.radio_value(&mut app.cut_axis, i, *name);
-            }
-        });
-        let (min, max) = obj.world_bbox;
-        let axis = app.cut_axis;
-        let position = min[axis] + app.cut_fraction * (max[axis] - min[axis]);
-        ui.add(
-            egui::Slider::new(&mut app.cut_fraction, 0.0..=1.0)
-                .show_value(false)
-                .text(format!("{} = {position:.2}", AXES[axis])),
-        );
-        ui.checkbox(&mut app.show_cut_plane, "Mostrar plano");
-        let button = ui.add_enabled(closed, egui::Button::new("Cortar"));
-        actions.cut = button.on_disabled_hover_text("La malla debe ser cerrada").clicked();
     }
 
-    boolean_panel(ui, app, actions);
+    if app.selected.is_some() {
+        ui.separator();
+        tool_section(ui, app, actions);
+    }
+}
+
+/// Opciones de la herramienta activa (solo esa) para el objeto seleccionado.
+fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
+    let Some(i) = app.selected else { return };
+    let Some(tool) = app.tool else {
+        ui.weak("Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F). Esc cierra la activa.");
+        return;
+    };
+    ui.label(egui::RichText::new(tool.label()).strong());
+    let pose = app.objects[i].pose;
+    match tool {
+        Tool::Move => {
+            let mut pose = pose;
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                ui.label("Posición");
+                for c in [&mut pose.translation.x, &mut pose.translation.y, &mut pose.translation.z] {
+                    changed |= ui.add(egui::DragValue::new(c).speed(0.1).max_decimals(2)).changed();
+                }
+            });
+            if changed {
+                actions.pose = Some((i, pose));
+            }
+            ui.weak("Arrastra las flechas. Ctrl: pasos de 1.");
+        }
+        Tool::Rotate => {
+            if ui.button("Restablecer rotación").clicked() {
+                actions.pose = Some((i, Pose::at(pose.translation)));
+            }
+            ui.weak("Arrastra los anillos. Ctrl: pasos de 15°.");
+        }
+        Tool::Cut => cut_section(ui, app, actions, i),
+        Tool::Boolean => boolean_panel(ui, app, actions),
+        Tool::PlaceOnFace => {
+            match app.facets.as_ref().map(|c| c.facets.len()) {
+                Some(0) => ui.weak("No hay caras planas estables (p. ej. superficies curvas)."),
+                Some(n) => ui.label(format!("{n} caras disponibles: haz clic en una para apoyar el objeto sobre ella.")),
+                None => ui.weak("Calculando…"),
+            };
+        }
+    }
+}
+
+fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usize) {
+    let obj = &app.objects[i];
+    let closed = obj.topology.is_closed();
+    let (min, max) = obj.world_bbox;
+
+    ui.horizontal(|ui| {
+        ui.label("Orientar");
+        for (k, name) in AXES.iter().enumerate() {
+            if ui.button(*name).on_hover_text(format!("Normal según {name}")).clicked() {
+                // Rotación que lleva la normal base (+Z) al eje elegido.
+                app.cut_pose.rotation = match k {
+                    0 => Quat::from_angle_y(degrees(90.0)),
+                    1 => Quat::from_angle_x(degrees(-90.0)),
+                    _ => Pose::at(vec3(0.0, 0.0, 0.0)).rotation,
+                };
+            }
+        }
+    });
+
+    // Rango del desplazamiento: proyección de las esquinas de la caja sobre la normal.
+    let n = app.cut_pose.rotation * vec3(0.0, 0.0, 1.0);
+    let (lo, hi) = (0..8)
+        .map(|k| vec3(if k & 1 == 0 { min.x } else { max.x }, if k & 2 == 0 { min.y } else { max.y }, if k & 4 == 0 { min.z } else { max.z }))
+        .fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(n.dot(c)), hi.max(n.dot(c))));
+    let current = n.dot(app.cut_pose.translation);
+    let mut offset = current;
+    ui.horizontal(|ui| {
+        ui.label("Desplazamiento");
+        let drag = egui::DragValue::new(&mut offset).range(lo..=hi).speed((hi - lo) * 0.005).max_decimals(2);
+        if ui.add(drag).changed() {
+            app.cut_pose.translation += n * (offset - current);
+        }
+    });
+    ui.weak("Arrastra la flecha para desplazar el plano y los anillos para inclinarlo.");
+    let button = ui.add_enabled(closed, egui::Button::new("Cortar"));
+    actions.cut = button.on_disabled_hover_text("La malla debe ser cerrada").clicked();
 }

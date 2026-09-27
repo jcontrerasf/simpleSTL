@@ -1,4 +1,5 @@
-//! Manipulador 3D (trasladar/rotar) sobre el objeto seleccionado, usando `transform-gizmo`.
+//! Manipulador 3D (trasladar/rotar) sobre el objeto seleccionado o el plano de corte,
+//! usando `transform-gizmo`.
 //!
 //! No se usa `GizmoExt::interact` de transform-gizmo-egui: registra un widget de egui
 //! bajo el cursor en todo momento, y three-d marcaría todos los arrastres como consumidos
@@ -12,7 +13,7 @@ use transform_gizmo_egui::prelude::*;
 
 /// Posición y orientación de un objeto. Las mallas se guardan centradas en su origen
 /// local, así que la traslación es también el centro de rotación.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub translation: Vec3,
     pub rotation: Quat,
@@ -49,32 +50,29 @@ impl Pose {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    Translate,
-    Rotate,
-    Both,
+/// Qué asas muestra el gizmo y en qué ejes (del mundo o del objeto) actúan.
+#[derive(Clone, Copy, Debug)]
+pub struct GizmoSetup {
+    modes: EnumSet<GizmoMode>,
+    orientation: GizmoOrientation,
 }
 
-impl Mode {
-    pub const ALL: [Mode; 3] = [Mode::Translate, Mode::Rotate, Mode::Both];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Translate => "Trasladar",
-            Mode::Rotate => "Rotar",
-            Mode::Both => "Ambos",
+impl GizmoSetup {
+    pub fn translate() -> Self {
+        Self {
+            modes: GizmoMode::TranslateX | GizmoMode::TranslateY | GizmoMode::TranslateZ,
+            orientation: GizmoOrientation::Global,
         }
     }
 
-    fn gizmo_modes(self) -> EnumSet<GizmoMode> {
-        let translate = GizmoMode::TranslateX | GizmoMode::TranslateY | GizmoMode::TranslateZ;
-        let rotate = GizmoMode::RotateX | GizmoMode::RotateY | GizmoMode::RotateZ;
-        match self {
-            Mode::Translate => translate,
-            Mode::Rotate => rotate,
-            Mode::Both => translate | rotate,
-        }
+    pub fn rotate() -> Self {
+        Self { modes: GizmoMode::RotateX | GizmoMode::RotateY | GizmoMode::RotateZ, orientation: GizmoOrientation::Global }
+    }
+
+    /// Plano de corte (normal = Z local): la flecha lo desplaza a lo largo de su normal
+    /// y los anillos X/Y locales lo inclinan.
+    pub fn cut_plane() -> Self {
+        Self { modes: GizmoMode::TranslateZ | GizmoMode::RotateX | GizmoMode::RotateY, orientation: GizmoOrientation::Local }
     }
 }
 
@@ -87,7 +85,6 @@ pub struct Click {
 
 pub struct Manipulator {
     gizmo: Gizmo,
-    pub mode: Mode,
     /// Cursor en puntos de egui (origen arriba a la izquierda).
     cursor: (f32, f32),
     left_down: bool,
@@ -104,7 +101,6 @@ impl Manipulator {
     pub fn new() -> Self {
         Self {
             gizmo: Gizmo::default(),
-            mode: Mode::Both,
             cursor: (-1.0, -1.0),
             left_down: false,
             pressed: false,
@@ -148,24 +144,24 @@ impl Manipulator {
         }
     }
 
-    /// Actualiza el gizmo para el objeto con pose `pose` y lo dibuja. Devuelve la pose
-    /// nueva si el usuario lo está arrastrando. `viewport` es el área del visor en puntos de egui;
-    /// `blocked` es una zona tapada por otro control (el cubo de vista).
+    /// Actualiza el gizmo sobre `target` (una pose y qué asas mostrar) y lo dibuja. Devuelve la
+    /// pose nueva si el usuario lo está arrastrando. `viewport` es el área del visor en puntos de
+    /// egui; `blocked` son zonas tapadas por otros controles (cubo de vista, barra).
     pub fn update(
         &mut self,
         ctx: &egui::Context,
         camera: &Camera,
         viewport: egui::Rect,
-        blocked: egui::Rect,
-        pose: Option<Pose>,
+        blocked: &[egui::Rect],
+        target: Option<(Pose, GizmoSetup)>,
     ) -> Option<Pose> {
-        let pose = pose?;
+        let (pose, setup) = target?;
         self.gizmo.update_config(GizmoConfig {
             view_matrix: row_matrix(camera.view()),
             projection_matrix: row_matrix(camera.projection()),
             viewport,
-            modes: self.mode.gizmo_modes(),
-            orientation: GizmoOrientation::Global,
+            modes: setup.modes,
+            orientation: setup.orientation,
             snapping: self.snapping,
             snap_angle: 15f32.to_radians(),
             snap_distance: 1.0,
@@ -174,7 +170,7 @@ impl Manipulator {
         });
 
         let cursor = egui::pos2(self.cursor.0, self.cursor.1);
-        let hovered = viewport.contains(cursor) && !blocked.contains(cursor);
+        let hovered = viewport.contains(cursor) && !blocked.iter().any(|r| r.contains(cursor));
         let result = self.gizmo.update(
             GizmoInteraction {
                 cursor_pos: self.cursor,
