@@ -11,7 +11,9 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
 ## Funciones
 
 - **Visor 3D** con órbita tipo tornamesa, desplazamiento y zoom, cubo de vista con
-  26 vistas y una base translúcida con grilla en z = 0.
+  26 vistas, proyección en perspectiva u ortogonal y una base translúcida con grilla
+  en z = 0.
+- **Deshacer y rehacer** cualquier cambio (Ctrl+Z / Ctrl+Y).
 - **Objetos**: abrir varios STL, mostrar u ocultar, cambiar el color, renombrar,
   clonar, exportar a STL y eliminar.
 - **Selección** con un clic en la vista 3D.
@@ -23,8 +25,9 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
   - **Apoyar en cara**: resalta las caras planas estables. Al hacer clic en una, la
     pieza queda apoyada en el suelo y alineada con los ejes.
 - **Primitivas** paramétricas cuyas dimensiones se pueden editar después de crearlas.
-- **Diagnóstico de malla**: indica si la malla es cerrada (condición necesaria para
-  cortes y booleanas) y muestra el volumen.
+- **Diagnóstico y reparación de mallas**: indica si la malla es cerrada (condición
+  necesaria para cortes y booleanas) o tiene normales invertidas. *Reparar malla*
+  suelda vértices, quita triángulos duplicados, orienta las caras y cierra agujeros.
 
 ## Requisitos
 
@@ -57,6 +60,9 @@ systemd-run --user --scope -p MemoryMax=4500M -p MemorySwapMax=0 cargo build --r
 cargo run --release -- samples/cubo.stl samples/esfera.stl
 ```
 
+`samples/cubo_roto.stl` es un cubo con una cara faltante y un triángulo invertido,
+para probar la reparación.
+
 Los archivos pasados como argumentos se abren al iniciar. También se pueden abrir
 con **Abrir STL…**.
 
@@ -68,6 +74,8 @@ con **Abrir STL…**.
 | Seleccionar / deseleccionar | Clic sobre un objeto / en el vacío |
 | Mover, Rotar, Corte, Booleana, Apoyar en cara | M, R, C, B, F |
 | Cerrar la herramienta | Esc |
+| Deshacer / rehacer | Ctrl+Z / Ctrl+Y (o Ctrl+Shift+Z) |
+| Alternar perspectiva / ortogonal | O |
 | Clonar | Ctrl+D |
 | Eliminar el objeto seleccionado | Supr |
 | Pasos fijos al arrastrar el manipulador | Mantener Ctrl |
@@ -82,7 +90,8 @@ cargo test
 
 Cubren la lectura de STL, la topología y el volumen, las booleanas, los cortes, la
 envolvente convexa, la búsqueda de caras para apoyar y su alineación, las
-primitivas y los nombres de las copias.
+primitivas, los nombres de las copias, el historial de deshacer y la reparación de
+mallas.
 
 ## Documentación
 

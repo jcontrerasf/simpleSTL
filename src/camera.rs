@@ -28,6 +28,7 @@ pub struct CameraController {
     min_distance: f32,
     max_distance: f32,
     animation: Option<Animation>,
+    orthographic: bool,
 }
 
 impl CameraController {
@@ -40,6 +41,7 @@ impl CameraController {
             min_distance: 0.01,
             max_distance: 1e5,
             animation: None,
+            orthographic: false,
         }
     }
 
@@ -158,6 +160,30 @@ impl CameraController {
         changed
     }
 
+    pub fn is_orthographic(&self) -> bool {
+        self.orthographic
+    }
+
+    pub fn set_orthographic(&mut self, camera: &mut Camera, orthographic: bool) {
+        self.orthographic = orthographic;
+        let distance = camera.position().distance(self.target);
+        self.apply_projection(camera, distance);
+    }
+
+    /// En three-d, la altura de la proyección ortográfica se multiplica por la distancia al
+    /// objetivo (y se recalcula en cada `set_view`). Con altura 2·tan(fov/2) el encuadre es el
+    /// mismo que en perspectiva, así que zoom, desplazamiento y encuadre no cambian.
+    fn apply_projection(&self, camera: &mut Camera, distance: f32) {
+        let far = distance * 100.0;
+        if self.orthographic {
+            let height = 2.0 * (FOV_DEGREES.to_radians() / 2.0).tan();
+            // Plano cercano negativo: no recorta lo que queda entre la cámara y el objetivo.
+            camera.set_orthographic_projection(height, -far, far);
+        } else {
+            camera.set_perspective_projection(degrees(FOV_DEGREES), distance * 0.001, far);
+        }
+    }
+
     /// Encuadra la caja `min..max` manteniendo la dirección de vista actual.
     pub fn fit(&mut self, camera: &mut Camera, min: Vec3, max: Vec3) {
         let center = (min + max) * 0.5;
@@ -171,6 +197,6 @@ impl CameraController {
         self.min_distance = radius * 0.01;
         self.max_distance = radius * 100.0;
         self.apply(camera, distance);
-        camera.set_perspective_projection(degrees(FOV_DEGREES), distance * 0.001, distance * 100.0);
+        self.apply_projection(camera, distance);
     }
 }

@@ -17,6 +17,8 @@ primitivas).
 | `src/camera.rs` | Cámara tornamesa (azimut y elevación), desplazamiento, zoom, encuadre y transiciones animadas |
 | `src/viewcube.rs` | Cubo de navegación dibujado con egui |
 | `src/toolbar.rs` | `Tool` y la barra superior |
+| `src/history.rs` | `History<T>`: pilas de deshacer y rehacer con límite |
+| `src/repair.rs` | Reparación de mallas: soldadura, duplicados, orientación, agujeros |
 | `src/ground.rs` | Base translúcida y grilla en z = 0 |
 
 ## Modelo de datos
@@ -24,6 +26,7 @@ primitivas).
 Cada `SceneObject` guarda:
 
 - **`mesh`**: la malla en coordenadas **locales**, centrada en el origen al crearse.
+  Es un `Arc<MeshData>` compartido con los clones y con el historial.
 - **`pose`**: traslación y rotación (cuaternión). Como la malla está centrada, la
   traslación es también el centro de rotación, y por eso el manipulador rota el
   objeto sobre sí mismo.
@@ -63,9 +66,11 @@ vértices compartidos, que Manifold necesita para reconocer una malla cerrada.
    conflictos de préstamos.
 7. **Cambios de herramienta o selección**: `on_tool_or_selection_changed` reinicia
    el plano de corte, fija A en la booleana e invalida las caras.
-8. **Cámara**: órbita, desplazamiento y zoom con los eventos que nadie consumió, y
+8. **Historial**: si no hay botones del ratón presionados y la escena difiere del
+   último estado confirmado, ese estado pasa al historial (`commit_changes`).
+9. **Cámara**: órbita, desplazamiento y zoom con los eventos que nadie consumió, y
    avance de las transiciones animadas.
-9. **Render**:
+10. **Render**:
    - primero los opacos;
    - después los transparentes (base, plano de corte, caras), que three-d ordena
      por distancia;
@@ -120,6 +125,48 @@ azimut. Las vistas del cubo interpolan azimut y elevación por el camino más co
    - si *Alinear* está activo, un giro extra sobre Z hasta que la mayor cara que
      quedó vertical mire a ±X o ±Y;
    - después, una traslación en Z hasta que el punto más bajo quede en 0.
+
+### Deshacer y rehacer
+
+No se instrumenta cada acción. Al final de cada cuadro sin botones del ratón
+presionados, `commit_changes` compara la escena con el último estado confirmado
+(`SceneState`). Si difiere, guarda el anterior en `History`. Así, cualquier acción
+nueva queda cubierta sin código extra, y un arrastre de muchos cuadros es un solo
+paso.
+
+- La comparación es barata: por objeto se compara nombre, pose, color, visibilidad y
+  parámetros de primitiva, y la malla por identidad del `Arc` (`Arc::ptr_eq`), no por
+  contenido. Toda operación que cambia geometría crea un `Arc` nuevo.
+- Las instantáneas no copian mallas.
+- `restore` reconstruye la lista de objetos y reutiliza el `Gm` de GPU de los que
+  conservan el mismo `Arc`. Solo sube de nuevo las mallas que ya no estaban, por
+  ejemplo al deshacer un borrado.
+- La selección se guarda en la instantánea para restaurarla, pero no cuenta como
+  cambio.
+
+### Proyección ortogonal
+
+three-d multiplica la altura de la proyección ortográfica por la distancia entre la
+cámara y el objetivo, y la recalcula en cada `set_view`. Con altura `2·tan(fov/2)` el
+encuadre coincide con el de la perspectiva, así que zoom, desplazamiento, encuadre y
+`pick` no necesitan casos especiales. El plano cercano es negativo para no recortar
+lo que queda entre la cámara y el objetivo.
+
+### Reparación de mallas
+
+`repair::repair` aplica, en orden:
+
+1. **Soldar** vértices a menos de `diagonal·1e-6`, con una grilla hash de celdas del
+   tamaño de la tolerancia y búsqueda en las 27 celdas vecinas.
+2. **Quitar** triángulos con índices repetidos y duplicados. Un par con los mismos
+   vértices y orientación opuesta es una aleta interna y se quitan ambos.
+3. **Orientar** con un recorrido en anchura por aristas compartidas por exactamente
+   dos caras: la vecina debe recorrer la arista común en sentido contrario.
+4. **Rellenar**: las aristas de borde (sin su inversa) se encadenan en lazos. Uno de
+   3 vértices se cierra con un triángulo y los demás con un abanico desde un vértice
+   nuevo en el centroide, recorriendo el borde al revés para quedar consistentes.
+5. **Hacia afuera**: por pieza conexa (unión-búsqueda por vértices), si el volumen
+   con signo es negativo se invierten todas sus caras.
 
 ### Booleanas y cortes
 

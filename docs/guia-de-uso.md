@@ -25,6 +25,13 @@
 La órbita es tipo tornamesa: gira alrededor del eje Z y la elevación se detiene en
 la vista cenital, sin dar la vuelta.
 
+### Perspectiva u ortogonal
+
+El botón bajo el cubo de vista, o la tecla **O**, alterna entre *Perspectiva* y
+*Ortogonal*. En ortogonal las líneas paralelas se mantienen paralelas, útil para
+comparar medidas en vistas de frente, lado o planta. El encuadre, el zoom y el
+desplazamiento funcionan igual en ambos modos.
+
 ### Cubo de vista
 
 Cada cara del cubo está dividida en 3 × 3 zonas:
@@ -61,6 +68,21 @@ La información del objeto seleccionado incluye:
 - el volumen, cuando es cerrada.
 
 Los cortes y las booleanas requieren mallas cerradas.
+
+### Reparar malla
+
+Si la malla no está cerrada, o está cerrada pero con **normales invertidas** (caras
+apuntando hacia adentro), aparece el botón **Reparar malla**. Aplica, en orden:
+
+1. suelda vértices casi coincidentes (STL con vértices duplicados);
+2. quita triángulos degenerados y duplicados;
+3. orienta las caras de forma consistente;
+4. cierra agujeros;
+5. orienta cada pieza hacia afuera.
+
+El mensaje de estado resume lo que hizo. Las aristas compartidas por más de dos caras
+(geometría no-manifold real) no se pueden resolver así, y el mensaje lo indica.
+Para probarlo está `samples/cubo_roto.stl`.
 
 ## Primitivas
 
@@ -129,12 +151,22 @@ En el panel:
 - Las superficies curvas, como una esfera, no tienen caras planas y el panel lo
   indica.
 
+## Deshacer y rehacer
+
+**Ctrl+Z** deshace y **Ctrl+Y** (o Ctrl+Shift+Z) rehace. Cubren todo cambio en la
+escena: abrir, primitivas, clonar, eliminar, booleanas, cortes, apoyar en cara,
+mover, rotar, dimensiones, reparar, renombrar, color y visibilidad. Un arrastre
+completo, del manipulador o de un valor, cuenta como un solo paso. Se guardan los
+últimos 100. No afectan a la cámara ni a la herramienta activa.
+
 ## Atajos
 
 | Tecla | Acción |
 |---|---|
 | M / R / C / B / F | Mover / Rotar / Corte / Booleana / Apoyar en cara |
 | Esc | Cerrar la herramienta activa |
+| Ctrl+Z / Ctrl+Y | Deshacer / rehacer (también Ctrl+Shift+Z) |
+| O | Alternar perspectiva / ortogonal |
 | Ctrl+D | Clonar el objeto seleccionado |
 | Supr | Eliminar el objeto seleccionado |
 | Ctrl (al arrastrar) | Pasos de 1 unidad o 15° |

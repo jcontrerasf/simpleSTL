@@ -166,3 +166,20 @@ fn contains(quad: &[Pos2; 4], p: Pos2) -> bool {
     }
     true
 }
+
+/// Botón bajo el cubo para alternar entre perspectiva y proyección ortogonal. Devuelve el
+/// área que ocupa (para que no cuente como clic en la escena).
+pub fn projection_button(ctx: &egui::Context, cube: Rect, orthographic: &mut bool) -> Rect {
+    egui::Area::new(egui::Id::new("projection"))
+        .fixed_pos(cube.left_bottom() + Vec2::new(0.0, 4.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let text = if *orthographic { "Ortogonal" } else { "Perspectiva" };
+            let button = egui::Button::new(text).min_size(Vec2::new(cube.width(), 0.0));
+            if ui.add(button).on_hover_text("Alternar proyección (O)").clicked() {
+                *orthographic = !*orthographic;
+            }
+        })
+        .response
+        .rect
+}

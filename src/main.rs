@@ -1,14 +1,17 @@
 mod camera;
 mod csg;
 mod ground;
+mod history;
 mod manipulator;
 mod mesh;
 mod place_on_face;
 mod primitives;
+mod repair;
 mod toolbar;
 mod viewcube;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use three_d::egui;
@@ -17,6 +20,7 @@ use three_d::*;
 use camera::CameraController;
 use csg::BooleanOp;
 use ground::Ground;
+use history::History;
 use manipulator::{GizmoSetup, Manipulator, Pose};
 use mesh::{MeshData, Topology};
 use place_on_face::{Facet, Facets};
@@ -35,7 +39,8 @@ const PALETTE: [[u8; 3]; 6] = [
 struct SceneObject {
     name: String,
     /// Malla en coordenadas locales, centrada en el origen; `pose` la ubica en el mundo.
-    mesh: MeshData,
+    /// Compartida (`Arc`) con las instantáneas del historial y con los clones.
+    mesh: Arc<MeshData>,
     pose: Pose,
     /// Caja envolvente en el mundo, recalculada al cambiar la pose.
     world_bbox: (Vec3, Vec3),
@@ -52,11 +57,11 @@ impl SceneObject {
     fn new(context: &Context, name: String, mesh: MeshData, color: [u8; 3]) -> Self {
         let (min, max) = mesh.bounding_box();
         let center = (min + max) * 0.5;
-        Self::from_local(context, name, mesh.transformed(|p| p - center), Pose::at(center), color)
+        Self::from_local(context, name, Arc::new(mesh.transformed(|p| p - center)), Pose::at(center), color)
     }
 
     /// `mesh` en coordenadas locales (centrada en el origen), ubicada en el mundo por `pose`.
-    fn from_local(context: &Context, name: String, mesh: MeshData, pose: Pose, color: [u8; 3]) -> Self {
+    fn from_local(context: &Context, name: String, mesh: Arc<MeshData>, pose: Pose, color: [u8; 3]) -> Self {
         let material = PhysicalMaterial::new_opaque(
             context,
             &CpuMaterial {
@@ -86,7 +91,7 @@ impl SceneObject {
     fn set_local_mesh(&mut self, context: &Context, mesh: MeshData) {
         self.model.geometry = Mesh::new(context, &mesh.to_cpu_mesh());
         self.topology = mesh.topology();
-        self.mesh = mesh;
+        self.mesh = Arc::new(mesh);
         self.set_pose(self.pose);
     }
 
@@ -123,6 +128,9 @@ struct App {
     cut_pose: Pose,
     /// Caras para "Apoyar en cara" del objeto seleccionado.
     facets: Option<FacetCache>,
+    history: History<SceneState>,
+    /// Último estado confirmado; el historial guarda los anteriores.
+    committed: SceneState,
     /// "Apoyar en cara" también alinea el objeto con X/Y (ver `placement_rotation`).
     align_on_place: bool,
     /// Para numerar las primitivas agregadas ("Cubo 1", "Esfera 2", …).
@@ -133,6 +141,42 @@ struct App {
     /// El campo de renombrar debe tomar el foco en el próximo cuadro (solo al abrirse:
     /// pedirlo siempre impediría que Enter lo suelte y confirme).
     rename_needs_focus: bool,
+}
+
+/// Lo que el historial guarda de cada objeto. La malla se comparte (`Arc`), así que una
+/// instantánea no copia geometría.
+#[derive(Clone)]
+struct ObjectState {
+    name: String,
+    mesh: Arc<MeshData>,
+    pose: Pose,
+    color: [u8; 3],
+    visible: bool,
+    primitive: Option<Primitive>,
+}
+
+impl ObjectState {
+    fn same_as(&self, other: &ObjectState) -> bool {
+        Arc::ptr_eq(&self.mesh, &other.mesh)
+            && self.name == other.name
+            && self.pose == other.pose
+            && self.color == other.color
+            && self.visible == other.visible
+            && self.primitive == other.primitive
+    }
+}
+
+#[derive(Clone)]
+struct SceneState {
+    objects: Vec<ObjectState>,
+    /// Se restaura al deshacer, pero seleccionar por sí solo no crea un paso de historial.
+    selected: Option<usize>,
+}
+
+impl SceneState {
+    fn same_scene(&self, other: &SceneState) -> bool {
+        self.objects.len() == other.objects.len() && self.objects.iter().zip(&other.objects).all(|(a, b)| a.same_as(b))
+    }
 }
 
 /// Caras de "Apoyar en cara" calculadas para un objeto en una pose dada, con su dibujo.
@@ -194,7 +238,7 @@ impl App {
         let pose = Pose::at(vec3(x, 0.0, -local_min.z));
         self.primitive_count += 1;
         let name = format!("{} {}", primitive.label(), self.primitive_count);
-        let mut obj = SceneObject::from_local(&self.context, name, mesh, pose, self.next_color());
+        let mut obj = SceneObject::from_local(&self.context, name, Arc::new(mesh), pose, self.next_color());
         obj.primitive = Some(primitive);
         self.status = format!("Agregado {}", obj.name);
         self.objects.push(obj);
@@ -354,6 +398,118 @@ impl App {
         }
     }
 
+    fn snapshot(&self) -> SceneState {
+        let objects = self
+            .objects
+            .iter()
+            .map(|o| ObjectState {
+                name: o.name.clone(),
+                mesh: o.mesh.clone(),
+                pose: o.pose,
+                color: o.color,
+                visible: o.visible,
+                primitive: o.primitive,
+            })
+            .collect();
+        SceneState { objects, selected: self.selected }
+    }
+
+    /// Vuelve a un estado del historial. Reutiliza la malla en GPU de los objetos cuya
+    /// geometría no cambió; solo sube de nuevo las que ya no existen (p. ej. al deshacer
+    /// un borrado).
+    fn restore(&mut self, state: SceneState) {
+        let mut old: Vec<Option<SceneObject>> = std::mem::take(&mut self.objects).into_iter().map(Some).collect();
+        let mut objects = Vec::with_capacity(state.objects.len());
+        for s in &state.objects {
+            let reused = old.iter_mut().find(|o| o.as_ref().is_some_and(|o| Arc::ptr_eq(&o.mesh, &s.mesh))).and_then(Option::take);
+            let mut obj = reused
+                .unwrap_or_else(|| SceneObject::from_local(&self.context, s.name.clone(), s.mesh.clone(), s.pose, s.color));
+            obj.name = s.name.clone();
+            obj.set_color(s.color);
+            obj.visible = s.visible;
+            obj.primitive = s.primitive;
+            obj.set_pose(s.pose);
+            objects.push(obj);
+        }
+        self.objects = objects;
+        self.selected = state.selected.filter(|&i| i < self.objects.len());
+        self.facets = None;
+        self.renaming = None;
+        self.committed = state;
+    }
+
+    fn undo(&mut self) {
+        match self.history.undo(self.snapshot()) {
+            Some(previous) => {
+                self.restore(previous);
+                self.status = "Deshecho".into();
+            }
+            None => self.status = "Nada que deshacer".into(),
+        }
+    }
+
+    fn redo(&mut self) {
+        match self.history.redo(self.snapshot()) {
+            Some(next) => {
+                self.restore(next);
+                self.status = "Rehecho".into();
+            }
+            None => self.status = "Nada que rehacer".into(),
+        }
+    }
+
+    /// Si la escena cambió desde el último estado confirmado, guarda ese estado en el
+    /// historial. Se llama al final de cada cuadro sin botones del ratón presionados, así
+    /// que un arrastre completo queda como un solo paso.
+    fn commit_changes(&mut self) {
+        if self.renaming.is_some() {
+            return;
+        }
+        let current = self.snapshot();
+        if current.same_scene(&self.committed) {
+            self.committed.selected = current.selected;
+        } else {
+            let previous = std::mem::replace(&mut self.committed, current);
+            self.history.record(previous);
+        }
+    }
+
+    /// Repara la malla del objeto (ver `repair.rs`) conservando su pose.
+    fn repair_object(&mut self, object: usize) {
+        let obj = &mut self.objects[object];
+        let (fixed, report) = repair::repair(&obj.mesh);
+        if !report.changed_anything() {
+            self.status = format!("{}: no se encontró nada que reparar", obj.name);
+            return;
+        }
+        obj.set_local_mesh(&self.context, fixed);
+        obj.primitive = None;
+        let mut parts = Vec::new();
+        for (count, what) in [
+            (report.welded_vertices, "vértices soldados"),
+            (report.removed_triangles, "triángulos eliminados"),
+            (report.flipped_triangles, "caras invertidas"),
+            (report.holes_filled, "agujeros cerrados"),
+        ] {
+            if count > 0 {
+                parts.push(format!("{what}: {count}"));
+            }
+        }
+        let topology = report.topology;
+        self.status = if topology.is_closed() {
+            format!("{} reparado: {}", obj.name, parts.join(", "))
+        } else {
+            format!(
+                "{} reparado en parte ({}); quedan {} bordes y {} aristas con más de dos caras",
+                obj.name,
+                parts.join(", "),
+                topology.boundary_edges,
+                topology.bad_edges
+            )
+        };
+        self.facets = None;
+    }
+
     /// Caja envolvente de los objetos visibles.
     fn bounding_box(&self) -> Option<(Vec3, Vec3)> {
         self.objects
@@ -382,6 +538,7 @@ struct UiActions {
     add_primitive: Option<Primitive>,
     clone: Option<usize>,
     resize: Option<(usize, Primitive)>,
+    repair: Option<usize>,
 }
 
 fn main() {
@@ -424,6 +581,8 @@ fn main() {
         facets: None,
         primitive_count: 0,
         align_on_place: true,
+        history: History::new(100),
+        committed: SceneState { objects: Vec::new(), selected: None },
         grid_spacing: ground.spacing,
         renaming: None,
         rename_needs_focus: false,
@@ -431,6 +590,8 @@ fn main() {
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
     }
+    // Los archivos abiertos al iniciar son el punto de partida, no un paso para deshacer.
+    app.committed = app.snapshot();
     let mut needs_fit = !app.objects.is_empty();
     // egui necesita un par de cuadros extra para asentar su layout tras cada evento.
     let mut extra_frames: u32 = 3;
@@ -460,6 +621,7 @@ fn main() {
         let mut cube_action = None;
         // Zonas del visor tapadas por controles: ahí los clics no seleccionan en la escena.
         let mut blocked: Vec<egui::Rect> = Vec::new();
+        let mut orthographic = control.is_orthographic();
         let (tool_before, selected_before) = (app.tool, app.selected);
 
         gui.update(
@@ -482,6 +644,7 @@ fn main() {
                 let cube_rect = viewcube::rect(view_rect);
                 cube_action = viewcube::show(ui.ctx(), cube_rect, &camera);
                 blocked.push(cube_rect);
+                blocked.push(viewcube::projection_button(ui.ctx(), cube_rect, &mut orthographic));
                 if app.selected.is_some() {
                     // La barra usa el ancho libre a la izquierda del cubo de vista.
                     let max_width = (cube_rect.min.x - view_rect.min.x - 32.0).max(120.0);
@@ -503,31 +666,30 @@ fn main() {
                 app.objects[i].set_pose(pose);
             }
         }
-        // Atajos de la barra (egui ya marcó como manejadas las teclas si hay un campo de texto activo).
-        if app.selected.is_some() {
-            for event in frame_input.events.iter_mut() {
-                if let Event::KeyPress { kind, modifiers, handled } = event {
-                    if *handled || modifiers.alt {
-                        continue;
-                    }
-                    if modifiers.ctrl {
-                        if *kind == Key::D {
-                            actions.clone = app.selected;
-                            *handled = true;
-                        }
-                        continue;
-                    }
-                    if *kind == Key::Escape {
-                        app.tool = None;
-                        *handled = true;
-                    } else if *kind == Key::Delete {
-                        actions.delete = app.selected;
-                        *handled = true;
-                    } else if let Some(tool) = Tool::ALL.into_iter().find(|t| t.key() == *kind) {
-                        app.tool = if app.tool == Some(tool) { None } else { Some(tool) };
-                        *handled = true;
-                    }
-                }
+        if orthographic != control.is_orthographic() {
+            control.set_orthographic(&mut camera, orthographic);
+        }
+        // Atajos de teclado (egui ya marcó como manejadas las teclas si hay un campo de texto activo).
+        let has_selection = app.selected.is_some();
+        for event in frame_input.events.iter_mut() {
+            let Event::KeyPress { kind, modifiers, handled } = event else { continue };
+            if *handled || modifiers.alt {
+                continue;
+            }
+            *handled = true;
+            match (*kind, modifiers.ctrl) {
+                (Key::Z, true) if modifiers.shift => app.redo(),
+                (Key::Z, true) => app.undo(),
+                (Key::Y, true) => app.redo(),
+                (Key::D, true) if has_selection => actions.clone = app.selected,
+                (Key::O, false) => control.set_orthographic(&mut camera, !control.is_orthographic()),
+                (Key::Escape, false) if has_selection => app.tool = None,
+                (Key::Delete, false) if has_selection => actions.delete = app.selected,
+                (key, false) if has_selection => match Tool::ALL.into_iter().find(|t| t.key() == key) {
+                    Some(tool) => app.tool = if app.tool == Some(tool) { None } else { Some(tool) },
+                    None => *handled = false,
+                },
+                _ => *handled = false,
             }
         }
         if let Some((i, pose)) = actions.pose {
@@ -625,6 +787,9 @@ fn main() {
         if let Some((i, primitive)) = actions.resize {
             app.resize_primitive(i, primitive);
         }
+        if let Some(i) = actions.repair {
+            app.repair_object(i);
+        }
         if actions.boolean {
             app.apply_boolean();
         }
@@ -652,6 +817,11 @@ fn main() {
         control.handle_events(&mut camera, &mut frame_input.events);
         if control.animate(&mut camera, frame_input.accumulated_time) {
             extra_frames = extra_frames.max(2);
+        }
+
+        // Confirmar cambios en el historial cuando no hay un arrastre en curso.
+        if !gui.context().input(|i| i.pointer.any_down()) {
+            app.commit_changes();
         }
 
         let mut scene: Vec<&dyn Object> = app.objects.iter().filter(|o| o.visible).map(|o| &o.model as &dyn Object).collect();
@@ -910,6 +1080,10 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         ui.label(egui::RichText::new(&obj.name).strong());
         let (local_min, local_max) = obj.mesh.bounding_box();
         let size = local_max - local_min;
+        let closed = obj.topology.is_closed();
+        let volume = obj.mesh.volume();
+        // Cerrada pero con volumen negativo: las caras apuntan hacia adentro.
+        let inverted = closed && volume < 0.0;
         egui::Grid::new("info").num_columns(2).show(ui, |ui| {
             ui.label("Triángulos");
             ui.label(obj.mesh.triangles.len().to_string());
@@ -921,21 +1095,31 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             ui.label(format!("{:.2} × {:.2} × {:.2}", size.x, size.y, size.z));
             ui.end_row();
             ui.label("Cerrada");
-            if obj.topology.is_closed() {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "sí");
-            } else {
+            if !closed {
                 ui.colored_label(
                     egui::Color32::LIGHT_RED,
                     format!("no ({} bordes, {} defectuosas)", obj.topology.boundary_edges, obj.topology.bad_edges),
                 );
+            } else if inverted {
+                ui.colored_label(egui::Color32::LIGHT_RED, "sí, con normales invertidas");
+            } else {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, "sí");
             }
             ui.end_row();
-            if obj.topology.is_closed() {
+            if closed {
                 ui.label("Volumen");
-                ui.label(format!("{:.2}", obj.mesh.volume().abs()));
+                ui.label(format!("{:.2}", volume.abs()));
                 ui.end_row();
             }
         });
+        if !closed || inverted {
+            let button = ui.button("Reparar malla").on_hover_text(
+                "Suelda vértices, quita triángulos duplicados, orienta las caras y cierra agujeros",
+            );
+            if button.clicked() {
+                actions.repair = app.selected;
+            }
+        }
         if let (Some(primitive), Some(i)) = (obj.primitive, app.selected) {
             if let Some(resized) = dimensions_section(ui, primitive) {
                 actions.resize = Some((i, resized));
