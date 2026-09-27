@@ -4,6 +4,7 @@ mod ground;
 mod manipulator;
 mod mesh;
 mod place_on_face;
+mod primitives;
 mod toolbar;
 mod viewcube;
 
@@ -18,7 +19,8 @@ use csg::BooleanOp;
 use ground::Ground;
 use manipulator::{GizmoSetup, Manipulator, Pose};
 use mesh::{MeshData, Topology};
-use place_on_face::Facet;
+use place_on_face::{Facet, Facets};
+use primitives::Primitive;
 use toolbar::Tool;
 
 const PALETTE: [[u8; 3]; 6] = [
@@ -41,6 +43,8 @@ struct SceneObject {
     model: Gm<Mesh, PhysicalMaterial>,
     color: [u8; 3],
     visible: bool,
+    /// Parámetros si es una primitiva; permiten cambiarle el tamaño.
+    primitive: Option<Primitive>,
 }
 
 impl SceneObject {
@@ -48,7 +52,11 @@ impl SceneObject {
     fn new(context: &Context, name: String, mesh: MeshData, color: [u8; 3]) -> Self {
         let (min, max) = mesh.bounding_box();
         let center = (min + max) * 0.5;
-        let mesh = mesh.transformed(|p| p - center);
+        Self::from_local(context, name, mesh.transformed(|p| p - center), Pose::at(center), color)
+    }
+
+    /// `mesh` en coordenadas locales (centrada en el origen), ubicada en el mundo por `pose`.
+    fn from_local(context: &Context, name: String, mesh: MeshData, pose: Pose, color: [u8; 3]) -> Self {
         let material = PhysicalMaterial::new_opaque(
             context,
             &CpuMaterial {
@@ -63,14 +71,23 @@ impl SceneObject {
             name,
             topology: mesh.topology(),
             mesh,
-            pose: Pose::at(center),
-            world_bbox: (min, max),
+            pose,
+            world_bbox: (vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, 0.0)),
             model,
             color,
             visible: true,
+            primitive: None,
         };
-        obj.set_pose(obj.pose);
+        obj.set_pose(pose);
         obj
+    }
+
+    /// Reemplaza la malla local (p. ej. al cambiar el tamaño de una primitiva) sin mover la pose.
+    fn set_local_mesh(&mut self, context: &Context, mesh: MeshData) {
+        self.model.geometry = Mesh::new(context, &mesh.to_cpu_mesh());
+        self.topology = mesh.topology();
+        self.mesh = mesh;
+        self.set_pose(self.pose);
     }
 
     fn set_pose(&mut self, pose: Pose) {
@@ -106,6 +123,10 @@ struct App {
     cut_pose: Pose,
     /// Caras para "Apoyar en cara" del objeto seleccionado.
     facets: Option<FacetCache>,
+    /// "Apoyar en cara" también alinea el objeto con X/Y (ver `placement_rotation`).
+    align_on_place: bool,
+    /// Para numerar las primitivas agregadas ("Cubo 1", "Esfera 2", …).
+    primitive_count: usize,
     grid_spacing: f32,
     /// Objeto que se está renombrando en la lista, con el texto en edición.
     renaming: Option<(usize, String)>,
@@ -118,7 +139,7 @@ struct App {
 struct FacetCache {
     object: usize,
     pose: Pose,
-    facets: Vec<Facet>,
+    facets: Facets,
     overlays: Vec<Gm<Mesh, ColorMaterial>>,
     hovered: Option<usize>,
 }
@@ -148,9 +169,64 @@ struct CutPlane {
 }
 
 impl App {
+    fn next_color(&self) -> [u8; 3] {
+        PALETTE[self.objects.len() % PALETTE.len()]
+    }
+
     fn add_object(&mut self, name: String, mesh: MeshData) {
-        let color = PALETTE[self.objects.len() % PALETTE.len()];
+        let color = self.next_color();
         self.objects.push(SceneObject::new(&self.context, name, mesh, color));
+        self.selected = Some(self.objects.len() - 1);
+    }
+
+    /// Agrega una primitiva apoyada en z = 0, a la derecha de lo que ya hay en la escena.
+    fn add_primitive(&mut self, primitive: Primitive) {
+        let Some(mesh) = primitive.mesh() else {
+            self.status = format!("No se pudo generar {}", primitive.label());
+            return;
+        };
+        let (local_min, local_max) = mesh.bounding_box();
+        let width = local_max.x - local_min.x;
+        let x = match self.bounding_box() {
+            Some((_, scene_max)) => scene_max.x + width * 0.7,
+            None => 0.0,
+        };
+        let pose = Pose::at(vec3(x, 0.0, -local_min.z));
+        self.primitive_count += 1;
+        let name = format!("{} {}", primitive.label(), self.primitive_count);
+        let mut obj = SceneObject::from_local(&self.context, name, mesh, pose, self.next_color());
+        obj.primitive = Some(primitive);
+        self.status = format!("Agregado {}", obj.name);
+        self.objects.push(obj);
+        self.selected = Some(self.objects.len() - 1);
+    }
+
+    /// Cambia los parámetros de una primitiva manteniendo su base a la misma altura.
+    fn resize_primitive(&mut self, object: usize, primitive: Primitive) {
+        let Some(mesh) = primitive.mesh() else { return };
+        let obj = &mut self.objects[object];
+        let bottom = obj.world_bbox.0.z;
+        obj.set_local_mesh(&self.context, mesh);
+        obj.primitive = Some(primitive);
+        let mut pose = obj.pose;
+        pose.translation.z += bottom - obj.world_bbox.0.z;
+        obj.set_pose(pose);
+        // La malla cambió aunque la pose no: las caras calculadas ya no valen.
+        self.facets = None;
+    }
+
+    /// Copia del objeto, desplazada en X para que quede al lado del original.
+    fn clone_object(&mut self, object: usize) {
+        let original = &self.objects[object];
+        let (min, max) = original.world_bbox;
+        let mut pose = original.pose;
+        pose.translation.x += (max.x - min.x) * 1.1;
+        let name = copy_name(&original.name, self.objects.iter().map(|o| o.name.as_str()));
+        let (mesh, primitive) = (original.mesh.clone(), original.primitive);
+        let mut copy = SceneObject::from_local(&self.context, name, mesh, pose, self.next_color());
+        copy.primitive = primitive;
+        self.status = format!("Clonado como {}", copy.name);
+        self.objects.push(copy);
         self.selected = Some(self.objects.len() - 1);
     }
 
@@ -219,16 +295,20 @@ impl App {
         let facets = place_on_face::find_facets(&obj.world_mesh());
         let (min, max) = obj.world_bbox;
         let lift = (max - min).magnitude() * 2e-3;
-        let overlays = facets.iter().map(|f| facet_overlay(&self.context, f, lift)).collect();
+        let overlays = facets.candidates.iter().map(|f| facet_overlay(&self.context, f, lift)).collect();
         self.facets = Some(FacetCache { object: i, pose: obj.pose, facets, overlays, hovered: None });
     }
 
-    /// Rota el objeto (sobre su centro) para que la cara de normal `normal` mire hacia abajo
-    /// y lo baja o sube hasta que quede apoyado en z = 0.
-    fn place_on_face(&mut self, object: usize, normal: Vec3) {
+    /// Rota el objeto (sobre su centro) para que la cara candidata `facet` mire hacia abajo
+    /// (y, si está activado, alinea sus caras verticales con X/Y); luego lo baja o sube hasta
+    /// que quede apoyado en z = 0.
+    fn place_on_face(&mut self, facet: usize) {
+        let Some(cache) = &self.facets else { return };
+        let (object, facets) = (cache.object, &cache.facets);
+        let rotation = place_on_face::placement_rotation(facets.candidates[facet].normal, &facets.planes, self.align_on_place);
         let obj = &mut self.objects[object];
         let mut pose = obj.pose;
-        pose.rotation = (place_on_face::rotation_to_floor(normal) * pose.rotation).normalize();
+        pose.rotation = (rotation * pose.rotation).normalize();
         obj.set_pose(pose);
         pose.translation.z -= obj.world_bbox.0.z;
         obj.set_pose(pose);
@@ -299,6 +379,9 @@ struct UiActions {
     pose: Option<(usize, Pose)>,
     boolean: bool,
     cut: bool,
+    add_primitive: Option<Primitive>,
+    clone: Option<usize>,
+    resize: Option<(usize, Primitive)>,
 }
 
 fn main() {
@@ -339,6 +422,8 @@ fn main() {
         tool: None,
         cut_pose: Pose::at(vec3(0.0, 0.0, 0.0)),
         facets: None,
+        primitive_count: 0,
+        align_on_place: true,
         grid_spacing: ground.spacing,
         renaming: None,
         rename_needs_focus: false,
@@ -422,7 +507,14 @@ fn main() {
         if app.selected.is_some() {
             for event in frame_input.events.iter_mut() {
                 if let Event::KeyPress { kind, modifiers, handled } = event {
-                    if *handled || modifiers.ctrl || modifiers.alt {
+                    if *handled || modifiers.alt {
+                        continue;
+                    }
+                    if modifiers.ctrl {
+                        if *kind == Key::D {
+                            actions.clone = app.selected;
+                            *handled = true;
+                        }
                         continue;
                     }
                     if *kind == Key::Escape {
@@ -469,11 +561,9 @@ fn main() {
             let p = click.position;
             if in_scene(p) {
                 // Con "Apoyar en cara", un clic sobre una cara resaltada tiene prioridad.
-                let facet = app.facets.as_ref().and_then(|c| {
-                    pick_facet(&context, &camera, c, p).map(|k| (c.object, c.facets[k].normal))
-                });
-                if let Some((object, normal)) = facet {
-                    app.place_on_face(object, normal);
+                let facet = app.facets.as_ref().and_then(|c| pick_facet(&context, &camera, c, p));
+                if let Some(facet) = facet {
+                    app.place_on_face(facet);
                 } else {
                     // Selección con el ratón: el índice de geometría es la posición en `visible`.
                     let visible: Vec<usize> = (0..app.objects.len()).filter(|&i| app.objects[i].visible).collect();
@@ -522,6 +612,15 @@ fn main() {
                     Err(e) => format!("Error al exportar: {e}"),
                 };
             }
+        }
+        if let Some(primitive) = actions.add_primitive {
+            app.add_primitive(primitive);
+        }
+        if let Some(i) = actions.clone {
+            app.clone_object(i);
+        }
+        if let Some((i, primitive)) = actions.resize {
+            app.resize_primitive(i, primitive);
         }
         if actions.boolean {
             app.apply_boolean();
@@ -573,6 +672,30 @@ fn main() {
         extra_frames = extra_frames.saturating_sub(1);
         FrameOutput { wait_next_event: extra_frames == 0, ..Default::default() }
     });
+}
+
+/// Separa el sufijo " (copiaN)" de un nombre: ("pieza", Some(2)) para "pieza (copia2)".
+fn split_copy_suffix(name: &str) -> (&str, Option<u32>) {
+    if let Some((base, rest)) = name.rsplit_once(" (copia") {
+        if let Some(Ok(n)) = rest.strip_suffix(')').map(str::parse::<u32>) {
+            return (base, Some(n));
+        }
+    }
+    (name, None)
+}
+
+/// Nombre para una copia de `name`: "base (copiaN)", con N uno más que la mayor copia existente
+/// de la misma base. Copiar una copia no acumula sufijos.
+fn copy_name<'a>(name: &str, existing: impl Iterator<Item = &'a str>) -> String {
+    let (base, _) = split_copy_suffix(name);
+    let last = existing
+        .filter_map(|other| match split_copy_suffix(other) {
+            (b, Some(n)) if b == base => Some(n),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0);
+    format!("{base} (copia{})", last + 1)
 }
 
 /// Qué manipula el gizmo según la herramienta activa: el objeto, el plano de corte o nada.
@@ -646,6 +769,7 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
 #[derive(Clone, Copy)]
 enum ObjectAction {
     Rename,
+    Clone,
     Export,
     Delete,
 }
@@ -655,6 +779,9 @@ fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
     let mut action = None;
     if ui.button("Renombrar").clicked() {
         action = Some(ObjectAction::Rename);
+    }
+    if ui.button("Clonar (Ctrl+D)").clicked() {
+        action = Some(ObjectAction::Clone);
     }
     if ui.button("Exportar STL…").clicked() {
         action = Some(ObjectAction::Export);
@@ -705,6 +832,14 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     ui.heading("simpleSTL");
     ui.horizontal(|ui| {
         actions.open = ui.button("Abrir STL…").clicked();
+        ui.menu_button("Primitivas", |ui| {
+            for primitive in Primitive::DEFAULTS {
+                if ui.button(primitive.label()).clicked() {
+                    actions.add_primitive = Some(primitive);
+                    ui.close();
+                }
+            }
+        });
         actions.fit = ui.button("Encuadrar").clicked();
     });
     ui.separator();
@@ -759,6 +894,7 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                     app.renaming = Some((i, obj.name.clone()));
                     app.rename_needs_focus = true;
                 }
+                Some(ObjectAction::Clone) => actions.clone = Some(i),
                 Some(ObjectAction::Export) => actions.export = Some(i),
                 Some(ObjectAction::Delete) => actions.delete = Some(i),
                 None => {}
@@ -797,12 +933,60 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 ui.end_row();
             }
         });
+        if let (Some(primitive), Some(i)) = (obj.primitive, app.selected) {
+            if let Some(resized) = dimensions_section(ui, primitive) {
+                actions.resize = Some((i, resized));
+            }
+        }
     }
 
     if app.selected.is_some() {
         ui.separator();
         tool_section(ui, app, actions);
     }
+}
+
+/// Parámetros editables de una primitiva. Devuelve los nuevos si el usuario cambió alguno.
+fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Primitive> {
+    let mut changed = false;
+    let mut length = |ui: &mut egui::Ui, label: &str, value: &mut f32| {
+        ui.label(label);
+        let drag = egui::DragValue::new(value).range(primitives::MIN_SIZE..=f32::MAX).speed(0.1).max_decimals(2);
+        changed |= ui.add(drag).changed();
+        ui.end_row();
+    };
+    ui.label(egui::RichText::new("Dimensiones").strong());
+    let mut segments_changed = false;
+    egui::Grid::new("dimensions").num_columns(2).show(ui, |ui| match &mut primitive {
+        Primitive::Box { size } => {
+            for (name, value) in ["Ancho (X)", "Fondo (Y)", "Alto (Z)"].into_iter().zip(size.iter_mut()) {
+                length(ui, name, value);
+            }
+        }
+        Primitive::Sphere { radius, segments } => {
+            length(ui, "Radio", radius);
+            ui.label("Segmentos");
+            segments_changed = ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
+        }
+        Primitive::Cylinder { radius, height, segments } => {
+            length(ui, "Radio", radius);
+            length(ui, "Alto", height);
+            ui.label("Segmentos");
+            segments_changed = ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
+        }
+        Primitive::Cone { radius_bottom, radius_top, height, segments } => {
+            length(ui, "Radio inferior", radius_bottom);
+            // El superior puede ser 0 (punta); el inferior no, o el sólido sería vacío.
+            ui.label("Radio superior");
+            let drag = egui::DragValue::new(radius_top).range(0.0..=f32::MAX).speed(0.1).max_decimals(2);
+            segments_changed |= ui.add(drag).changed();
+            ui.end_row();
+            length(ui, "Alto", height);
+            ui.label("Segmentos");
+            segments_changed |= ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
+        }
+    });
+    (changed || segments_changed).then_some(primitive)
 }
 
 /// Opciones de la herramienta activa (solo esa) para el objeto seleccionado.
@@ -838,7 +1022,9 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         Tool::Cut => cut_section(ui, app, actions, i),
         Tool::Boolean => boolean_panel(ui, app, actions),
         Tool::PlaceOnFace => {
-            match app.facets.as_ref().map(|c| c.facets.len()) {
+            ui.checkbox(&mut app.align_on_place, "Alinear con los ejes X/Y")
+                .on_hover_text("Tras apoyar, gira sobre Z para que las caras verticales miren a ±X o ±Y");
+            match app.facets.as_ref().map(|c| c.facets.candidates.len()) {
                 Some(0) => ui.weak("No hay caras planas estables (p. ej. superficies curvas)."),
                 Some(n) => ui.label(format!("{n} caras disponibles: haz clic en una para apoyar el objeto sobre ella.")),
                 None => ui.weak("Calculando…"),
@@ -883,4 +1069,20 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
     ui.weak("Arrastra la flecha para desplazar el plano y los anillos para inclinarlo.");
     let button = ui.add_enabled(closed, egui::Button::new("Cortar"));
     actions.cut = button.on_disabled_hover_text("La malla debe ser cerrada").clicked();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_name;
+
+    #[test]
+    fn copies_are_numbered_without_nesting() {
+        assert_eq!(copy_name("pieza", ["pieza"].into_iter()), "pieza (copia1)");
+        let names = ["pieza", "pieza (copia1)", "pieza (copia2)"];
+        // Copiar el original o cualquier copia da el siguiente número.
+        assert_eq!(copy_name("pieza", names.into_iter()), "pieza (copia3)");
+        assert_eq!(copy_name("pieza (copia1)", names.into_iter()), "pieza (copia3)");
+        // Paréntesis que no son de copia se conservan.
+        assert_eq!(copy_name("tapa (v2)", ["tapa (v2)"].into_iter()), "tapa (v2) (copia1)");
+    }
 }

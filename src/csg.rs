@@ -77,6 +77,22 @@ pub fn split(mesh: &MeshData, normal: [f64; 3], offset: f64) -> Result<(Option<M
     Ok((from_manifold(&positive), from_manifold(&negative)))
 }
 
+/// Paralelepípedo centrado en el origen.
+pub fn cube(x: f32, y: f32, z: f32) -> Option<MeshData> {
+    from_manifold(&Manifold::cube(x as f64, y as f64, z as f64, true))
+}
+
+/// Esfera centrada en el origen.
+pub fn sphere(radius: f32, segments: u32) -> Option<MeshData> {
+    from_manifold(&Manifold::sphere(radius as f64, segments as i32))
+}
+
+/// Tronco de cono a lo largo de Z, centrado en el origen. Con radios iguales es un
+/// cilindro; con `radius_top = 0`, un cono con punta.
+pub fn cylinder(radius_bottom: f32, radius_top: f32, height: f32, segments: u32) -> Option<MeshData> {
+    from_manifold(&Manifold::cylinder(height as f64, radius_bottom as f64, radius_top as f64, segments as i32, true))
+}
+
 /// Envolvente convexa de un conjunto de puntos.
 pub fn convex_hull(points: &[[f32; 3]]) -> Option<MeshData> {
     let points: Vec<[f64; 3]> = points.iter().map(|p| p.map(|c| c as f64)).collect();

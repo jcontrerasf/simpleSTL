@@ -22,10 +22,19 @@ pub struct Facet {
 const MIN_AREA_FRACTION: f32 = 0.005;
 const MAX_FACETS: usize = 64;
 
-/// Caras planas estables de la malla (en el mundo), de mayor a menor área.
-pub fn find_facets(world: &MeshData) -> Vec<Facet> {
+/// Resultado del análisis de caras planas de un objeto.
+pub struct Facets {
+    /// Caras sobre las que el objeto puede apoyarse (estables), de mayor a menor área.
+    pub candidates: Vec<Facet>,
+    /// Todas las caras planas significativas de la envolvente (estables o no), de mayor a
+    /// menor área. Sirven de referencia para alinear el objeto con los ejes.
+    pub planes: Vec<Facet>,
+}
+
+/// Caras planas de la malla (en el mundo).
+pub fn find_facets(world: &MeshData) -> Facets {
     let Some(hull) = csg::convex_hull(&world.vertices) else {
-        return Vec::new();
+        return Facets { candidates: Vec::new(), planes: Vec::new() };
     };
     let (min, max) = world.bounding_box();
     let size = (max - min).magnitude().max(1e-6);
@@ -56,15 +65,14 @@ pub fn find_facets(world: &MeshData) -> Vec<Facet> {
     }
 
     let total_area: f32 = groups.iter().map(|(_, f)| f.area).sum();
+    let mut planes: Vec<Facet> =
+        groups.into_iter().map(|(_, f)| f).filter(|f| f.area >= total_area * MIN_AREA_FRACTION).collect();
+    planes.sort_by(|a, b| b.area.total_cmp(&a.area));
+
     let centroid = world.centroid();
-    let mut facets: Vec<Facet> = groups
-        .into_iter()
-        .map(|(_, f)| f)
-        .filter(|f| f.area >= total_area * MIN_AREA_FRACTION && is_stable(f, centroid, size))
-        .collect();
-    facets.sort_by(|a, b| b.area.total_cmp(&a.area));
-    facets.truncate(MAX_FACETS);
-    facets
+    let mut candidates: Vec<Facet> = planes.iter().filter(|f| is_stable(f, centroid, size)).cloned().collect();
+    candidates.truncate(MAX_FACETS);
+    Facets { candidates, planes }
 }
 
 /// Estable si el centro de masa, proyectado sobre el plano de la cara, cae dentro de ella.
@@ -91,6 +99,25 @@ pub fn rotation_to_floor(normal: Vec3) -> Quat {
     }
 }
 
+/// Rotación (en el mundo) para apoyar la cara de normal `down` en el suelo. Con `align`,
+/// además gira alrededor de Z lo mínimo para que la mayor cara que quede vertical mire hacia
+/// ±X o ±Y; sin eso, el objeto queda apoyado pero con un giro arbitrario sobre Z.
+pub fn placement_rotation(down: Vec3, planes: &[Facet], align: bool) -> Quat {
+    let to_floor = rotation_to_floor(down);
+    if !align {
+        return to_floor;
+    }
+    // `planes` viene ordenado por área: la primera cara casi vertical tras apoyar es la referencia.
+    let reference = planes.iter().map(|f| to_floor * f.normal).find(|n| n.z.abs() < 0.02);
+    let Some(n) = reference else {
+        return to_floor; // sin caras verticales (p. ej. un cilindro): nada que alinear
+    };
+    let angle = n.y.atan2(n.x);
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let snapped = (angle / quarter).round() * quarter;
+    Quat::from_angle_z(Rad(snapped - angle)) * to_floor
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,15 +130,35 @@ mod tests {
     #[test]
     fn cube_has_six_facets() {
         let facets = find_facets(&load("cubo.stl"));
-        assert_eq!(facets.len(), 6);
-        for f in &facets {
+        assert_eq!(facets.candidates.len(), 6);
+        for f in &facets.candidates {
             assert!((f.area - 400.0).abs() < 1e-2, "área {}", f.area);
         }
     }
 
     #[test]
     fn sphere_has_no_flat_facets() {
-        assert!(find_facets(&load("esfera.stl")).is_empty());
+        assert!(find_facets(&load("esfera.stl")).candidates.is_empty());
+    }
+
+    #[test]
+    fn placing_a_tilted_cube_leaves_it_axis_aligned() {
+        // Cubo girado en los tres ejes.
+        let tilt = Quat::from_angle_z(Rad(0.4)) * Quat::from_angle_y(Rad(0.7)) * Quat::from_angle_x(Rad(-0.3));
+        let cube = load("cubo.stl").transformed(|p| tilt * p);
+        let facets = find_facets(&cube);
+        for facet in &facets.candidates {
+            let rotation = placement_rotation(facet.normal, &facets.planes, true);
+            let (min, max) = cube.transformed(|p| rotation * p).bounding_box();
+            let size = max - min;
+            // Alineado con los ejes, la caja envolvente vuelve a ser exactamente 20 × 20 × 20.
+            assert!((size - vec3(20.0, 20.0, 20.0)).magnitude() < 1e-2, "{size:?}");
+        }
+        // Sin alinear, solo la cara queda abajo y la caja sigue siendo más ancha en X/Y.
+        let rotation = placement_rotation(facets.candidates[0].normal, &facets.planes, false);
+        let (min, max) = cube.transformed(|p| rotation * p).bounding_box();
+        assert!((max.z - min.z - 20.0).abs() < 1e-2);
+        assert!(max.x - min.x > 20.5);
     }
 
     #[test]
