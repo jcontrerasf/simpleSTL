@@ -149,8 +149,16 @@ impl Manipulator {
     }
 
     /// Actualiza el gizmo para el objeto con pose `pose` y lo dibuja. Devuelve la pose
-    /// nueva si el usuario lo está arrastrando. `viewport` es el área del visor en puntos de egui.
-    pub fn update(&mut self, ctx: &egui::Context, camera: &Camera, viewport: egui::Rect, pose: Option<Pose>) -> Option<Pose> {
+    /// nueva si el usuario lo está arrastrando. `viewport` es el área del visor en puntos de egui;
+    /// `blocked` es una zona tapada por otro control (el cubo de vista).
+    pub fn update(
+        &mut self,
+        ctx: &egui::Context,
+        camera: &Camera,
+        viewport: egui::Rect,
+        blocked: egui::Rect,
+        pose: Option<Pose>,
+    ) -> Option<Pose> {
         let pose = pose?;
         self.gizmo.update_config(GizmoConfig {
             view_matrix: row_matrix(camera.view()),
@@ -165,7 +173,8 @@ impl Manipulator {
             ..Default::default()
         });
 
-        let hovered = viewport.contains(egui::pos2(self.cursor.0, self.cursor.1));
+        let cursor = egui::pos2(self.cursor.0, self.cursor.1);
+        let hovered = viewport.contains(cursor) && !blocked.contains(cursor);
         let result = self.gizmo.update(
             GizmoInteraction {
                 cursor_pos: self.cursor,

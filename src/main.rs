@@ -1,7 +1,9 @@
 mod camera;
 mod csg;
+mod ground;
 mod manipulator;
 mod mesh;
+mod viewcube;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -11,6 +13,7 @@ use three_d::*;
 
 use camera::CameraController;
 use csg::BooleanOp;
+use ground::Ground;
 use manipulator::{Manipulator, Mode, Pose};
 use mesh::{MeshData, Topology};
 
@@ -98,6 +101,7 @@ struct App {
     cut_fraction: f32,
     show_cut_plane: bool,
     manipulator_mode: Mode,
+    grid_spacing: f32,
 }
 
 /// Plano de corte ya resuelto en coordenadas del mundo.
@@ -225,14 +229,15 @@ fn main() {
     .unwrap();
     let context = window.gl();
 
-    let mut camera = CameraController::new_camera(window.viewport());
     let mut control = CameraController::new(vec3(0.0, 0.0, 0.0));
+    let mut camera = control.new_camera(window.viewport());
     let mut gui = GUI::new(&context);
 
     let ambient = AmbientLight::new(&context, 0.35, Srgba::WHITE);
     let key = DirectionalLight::new(&context, 2.0, Srgba::WHITE, vec3(-1.0, 1.0, -2.0));
     let fill = DirectionalLight::new(&context, 0.8, Srgba::WHITE, vec3(1.0, -0.5, 1.0));
     let mut axes = Axes::new(&context, 0.01, 1.0);
+    let mut ground = Ground::new(&context, vec3(0.0, 0.0, 0.0), 100.0);
     let mut cut_preview = Gm::new(
         Mesh::new(&context, &CpuMesh::square()),
         ColorMaterial::new_transparent(
@@ -253,6 +258,7 @@ fn main() {
         cut_fraction: 0.5,
         show_cut_plane: true,
         manipulator_mode: Mode::Both,
+        grid_spacing: ground.spacing,
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -284,6 +290,8 @@ fn main() {
         manipulator.mode = app.manipulator_mode;
         manipulator.track_input(&frame_input.events, dpr, window_viewport.height);
         let mut dragged_pose = None;
+        let mut cube_action = None;
+        let mut cube_rect = egui::Rect::NOTHING;
 
         gui.update(
             &mut frame_input.events,
@@ -303,7 +311,9 @@ fn main() {
                     egui::pos2(window_viewport.width as f32 / dpr, window_viewport.height as f32 / dpr),
                 );
                 let pose = app.selected.and_then(|i| app.objects.get(i)).filter(|o| o.visible).map(|o| o.pose);
-                dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, pose);
+                cube_rect = viewcube::rect(view_rect);
+                cube_action = viewcube::show(ui.ctx(), cube_rect, &camera);
+                dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, cube_rect, pose);
             },
         );
 
@@ -313,8 +323,15 @@ fn main() {
         if let Some((i, pose)) = actions.pose {
             app.objects[i].set_pose(pose);
         }
+        match cube_action {
+            Some(viewcube::Action::LookFrom(direction)) => control.look_from(direction),
+            Some(viewcube::Action::Orbit(delta)) => control.orbit_by_drag(&mut camera, delta),
+            None => {}
+        }
         if let Some(click) = manipulator.consume_events(&mut frame_input.events) {
-            if click.position.x >= viewport.x as f32 {
+            let p = click.position;
+            let in_cube = cube_rect.contains(egui::pos2(p.x / dpr, (window_viewport.height as f32 - p.y) / dpr));
+            if p.x >= viewport.x as f32 && !in_cube {
                 // Selección con el ratón: el índice de geometría es la posición en `visible`.
                 let visible: Vec<usize> = (0..app.objects.len()).filter(|&i| app.objects[i].visible).collect();
                 let geometries = visible.iter().map(|&i| &app.objects[i].model.geometry);
@@ -373,13 +390,19 @@ fn main() {
                 control.fit(&mut camera, min, max);
                 let size = (max - min).magnitude();
                 axes = Axes::new(&context, size * 0.004, size * 0.3);
+                ground = Ground::new(&context, (min + max) * 0.5, (max.x - min.x).max(max.y - min.y) * 1.6);
+                app.grid_spacing = ground.spacing;
             }
             needs_fit = false;
         }
         control.handle_events(&mut camera, &mut frame_input.events);
+        if control.animate(&mut camera, frame_input.accumulated_time) {
+            extra_frames = extra_frames.max(2);
+        }
 
         let mut scene: Vec<&dyn Object> = app.objects.iter().filter(|o| o.visible).map(|o| &o.model as &dyn Object).collect();
         scene.push(&axes);
+        scene.extend(ground.objects());
         if let Some(plane) = &cut_plane {
             cut_preview.set_transformation(plane.transform);
             scene.push(&cut_preview);
@@ -444,6 +467,7 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         if !app.status.is_empty() {
             ui.label(&app.status);
         }
+        ui.weak(format!("Base z = 0 · grilla cada {}", app.grid_spacing));
         ui.weak("Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom");
     });
     egui::ScrollArea::vertical().show(ui, |ui| panel_contents(ui, app, actions));
