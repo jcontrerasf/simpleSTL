@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=simpleSTL
+Comment=Editor simple de archivos STL
+Exec=simple_stl
+Icon=simplestl
+Categories=Graphics;3DGraphics;
+Terminal=false

@@ -1,3 +1,6 @@
+// En Windows (release) no abrir una consola junto a la ventana.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod camera;
 mod csg;
 mod ground;

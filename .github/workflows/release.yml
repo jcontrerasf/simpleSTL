@@ -1,0 +1,96 @@
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: AppImage (Linux)
+    # Compilar en la Ubuntu más antigua disponible: el AppImage resultante
+    # funciona en distros con glibc igual o más nueva.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache Manifold
+        id: manifold-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/manifold-lib
+          key: manifold-${{ runner.os }}-${{ hashFiles('scripts/build-manifold.sh') }}
+      - name: Build Manifold
+        if: steps.manifold-cache.outputs.cache-hit != 'true'
+        run: JOBS=4 scripts/build-manifold.sh
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package AppImage
+        run: |
+          sudo apt-get update && sudo apt-get install -y libfuse2
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --executable target/release/simple_stl \
+            --desktop-file packaging/simplestl.desktop \
+            --icon-file packaging/simplestl.svg \
+            --output appimage
+          mv simpleSTL-*.AppImage simpleSTL-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simpleSTL-linux
+          path: simpleSTL-x86_64.AppImage
+
+  windows:
+    name: .exe (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Cache Manifold
+        id: manifold-cache
+        uses: actions/cache@v4
+        with:
+          path: third_party/manifold-lib
+          key: manifold-${{ runner.os }}-${{ hashFiles('scripts/build-manifold.sh') }}
+      - name: Build Manifold
+        if: steps.manifold-cache.outputs.cache-hit != 'true'
+        run: JOBS=4 scripts/build-manifold.sh
+
+      - name: Build
+        run: |
+          cargo build --release --locked
+          cp target/release/simple_stl.exe simpleSTL.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: simpleSTL-windows
+          path: simpleSTL.exe
+
+  release:
+    name: Publicar release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            simpleSTL-x86_64.AppImage
+            simpleSTL.exe

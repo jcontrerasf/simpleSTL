@@ -8,6 +8,8 @@ cilindro, cono).
 La interfaz está inspirada en PrusaSlicer y FreeCAD: una barra de herramientas
 sobre el visor, un cubo de navegación y un panel lateral con la lista de objetos.
 
+![Captura de simpleSTL](docs/images/screenshot.png)
+
 ## Funciones
 
 - **Visor 3D** con órbita tipo tornamesa, desplazamiento y zoom, cubo de vista con

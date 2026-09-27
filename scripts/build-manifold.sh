@@ -21,8 +21,10 @@ cmake -S "$tp/manifold-src" -B "$tp/manifold-build" \
     -DMANIFOLD_CBIND=ON -DMANIFOLD_CROSS_SECTION=ON \
     -DMANIFOLD_USE_BUILTIN_CLIPPER2=ON -DMANIFOLD_PAR=OFF \
     -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-cmake --build "$tp/manifold-build" -j "$JOBS"
+# --config Release: necesario con generadores multi-config (Visual Studio en Windows).
+cmake --build "$tp/manifold-build" --config Release -j "$JOBS"
 
 mkdir -p "$tp/manifold-lib"
-find "$tp/manifold-build" -name '*.a' -exec cp {} "$tp/manifold-lib/" \;
+# .a en Linux/macOS, .lib en Windows (MSVC).
+find "$tp/manifold-build" \( -name '*.a' -o -name '*.lib' \) -exec cp {} "$tp/manifold-lib/" \;
 ls "$tp/manifold-lib"
