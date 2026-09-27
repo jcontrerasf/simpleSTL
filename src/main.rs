@@ -520,6 +520,9 @@ fn main() {
                     if *kind == Key::Escape {
                         app.tool = None;
                         *handled = true;
+                    } else if *kind == Key::Delete {
+                        actions.delete = app.selected;
+                        *handled = true;
                     } else if let Some(tool) = Tool::ALL.into_iter().find(|t| t.key() == *kind) {
                         app.tool = if app.tool == Some(tool) { None } else { Some(tool) };
                         *handled = true;
