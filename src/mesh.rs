@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use three_d::{CpuMesh, Indices, InnerSpace, Positions, Vec3, vec3};
@@ -51,6 +51,23 @@ impl MeshData {
             return Err("el archivo no contiene triángulos".into());
         }
         Ok(Self { vertices, triangles })
+    }
+
+    pub fn save_stl(&self, path: &Path) -> Result<(), String> {
+        let triangles: Vec<stl_io::Triangle> = self
+            .triangles
+            .iter()
+            .map(|&[a, b, c]| {
+                let n = (self.vertex(b) - self.vertex(a)).cross(self.vertex(c) - self.vertex(a));
+                let n = if n.magnitude2() > 0.0 { n.normalize() } else { n };
+                stl_io::Triangle {
+                    normal: stl_io::Normal::new([n.x, n.y, n.z]),
+                    vertices: [a, b, c].map(|i| stl_io::Vertex::new(self.vertices[i as usize])),
+                }
+            })
+            .collect();
+        let file = File::create(path).map_err(|e| format!("no se pudo crear: {e}"))?;
+        stl_io::write_stl(&mut BufWriter::new(file), triangles.iter()).map_err(|e| format!("error al escribir: {e}"))
     }
 
     fn vertex(&self, i: u32) -> Vec3 {

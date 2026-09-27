@@ -1,12 +1,15 @@
 mod camera;
+mod csg;
 mod mesh;
 
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use three_d::egui;
 use three_d::*;
 
 use camera::CameraController;
+use csg::BooleanOp;
 use mesh::{MeshData, Topology};
 
 const PALETTE: [[u8; 3]; 6] = [
@@ -48,24 +51,107 @@ impl SceneObject {
     }
 }
 
+const AXES: [&str; 3] = ["X", "Y", "Z"];
+
 struct App {
     context: Context,
     objects: Vec<SceneObject>,
     selected: Option<usize>,
     status: String,
+    bool_a: usize,
+    bool_b: usize,
+    bool_op: BooleanOp,
+    cut_axis: usize,
+    /// Posición del plano de corte como fracción (0..1) de la caja del objeto seleccionado.
+    cut_fraction: f32,
+    show_cut_plane: bool,
+}
+
+/// Plano de corte ya resuelto en coordenadas del mundo.
+struct CutPlane {
+    object: usize,
+    normal: [f64; 3],
+    offset: f64,
+    /// Transformación del cuadrado unitario de `CpuMesh::square()` para la vista previa.
+    transform: Mat4,
 }
 
 impl App {
+    fn add_object(&mut self, name: String, mesh: MeshData) {
+        let color = PALETTE[self.objects.len() % PALETTE.len()];
+        self.objects.push(SceneObject::new(&self.context, name, mesh, color));
+        self.selected = Some(self.objects.len() - 1);
+    }
+
     fn load(&mut self, path: &Path) {
         match MeshData::load_stl(path) {
             Ok(mesh) => {
                 let name = path.file_name().map_or("sin nombre".into(), |n| n.to_string_lossy().into_owned());
-                let color = PALETTE[self.objects.len() % PALETTE.len()];
                 self.status = format!("Cargado {name} ({} triángulos)", mesh.triangles.len());
-                self.objects.push(SceneObject::new(&self.context, name, mesh, color));
-                self.selected = Some(self.objects.len() - 1);
+                self.add_object(name, mesh);
             }
             Err(e) => self.status = format!("Error en {}: {e}", path.display()),
+        }
+    }
+
+    fn cut_plane(&self) -> Option<CutPlane> {
+        let object = self.selected?;
+        let (min, max) = self.objects.get(object)?.mesh.bounding_box();
+        let axis = self.cut_axis;
+        let offset = min[axis] + self.cut_fraction * (max[axis] - min[axis]);
+
+        let mut normal = [0.0; 3];
+        normal[axis] = 1.0;
+        let mut center = (min + max) * 0.5;
+        center[axis] = offset;
+        // El cuadrado base está en el plano XY (normal +Z); se rota para que su normal sea el eje elegido.
+        let rotation = match axis {
+            0 => Mat4::from_angle_y(degrees(90.0)),
+            1 => Mat4::from_angle_x(degrees(-90.0)),
+            _ => Mat4::identity(),
+        };
+        let size = (max - min).magnitude() * 0.6;
+        let transform = Mat4::from_translation(center) * rotation * Mat4::from_scale(size);
+        Some(CutPlane { object, normal, offset: offset as f64, transform })
+    }
+
+    fn apply_boolean(&mut self) {
+        let (Some(a), Some(b)) = (self.objects.get(self.bool_a), self.objects.get(self.bool_b)) else {
+            return;
+        };
+        let op = self.bool_op;
+        let name = format!("{} {} {}", a.name, op.symbol(), b.name);
+        let start = Instant::now();
+        match csg::boolean(&a.mesh, &b.mesh, op) {
+            Ok(Some(mesh)) => {
+                self.status = format!("{} en {:.0?} ({} triángulos)", op.label(), start.elapsed(), mesh.triangles.len());
+                self.objects[self.bool_a].visible = false;
+                self.objects[self.bool_b].visible = false;
+                self.add_object(name, mesh);
+            }
+            Ok(None) => self.status = format!("{}: el resultado es vacío", op.label()),
+            Err(e) => self.status = e,
+        }
+    }
+
+    fn apply_cut(&mut self, plane: CutPlane) {
+        let obj = &self.objects[plane.object];
+        let axis = AXES[self.cut_axis];
+        let base = obj.name.clone();
+        let start = Instant::now();
+        match csg::split(&obj.mesh, plane.normal, plane.offset) {
+            Ok((positive, negative)) => {
+                if positive.is_none() || negative.is_none() {
+                    self.status = "El plano no atraviesa el objeto".into();
+                    return;
+                }
+                self.objects[plane.object].visible = false;
+                for (half, sign) in [(positive, "+"), (negative, "−")] {
+                    self.add_object(format!("{base} ({sign}{axis})"), half.unwrap());
+                }
+                self.status = format!("Corte en {axis} = {:.2} en {:.0?}", plane.offset, start.elapsed());
+            }
+            Err(e) => self.status = e,
         }
     }
 
@@ -90,6 +176,9 @@ struct UiActions {
     open: bool,
     fit: bool,
     delete: Option<usize>,
+    export: Option<usize>,
+    boolean: bool,
+    cut: bool,
 }
 
 fn main() {
@@ -109,8 +198,26 @@ fn main() {
     let key = DirectionalLight::new(&context, 2.0, Srgba::WHITE, vec3(-1.0, 1.0, -2.0));
     let fill = DirectionalLight::new(&context, 0.8, Srgba::WHITE, vec3(1.0, -0.5, 1.0));
     let mut axes = Axes::new(&context, 0.01, 1.0);
+    let mut cut_preview = Gm::new(
+        Mesh::new(&context, &CpuMesh::square()),
+        ColorMaterial::new_transparent(
+            &context,
+            &CpuMaterial { albedo: Srgba::new(255, 200, 60, 80), ..Default::default() },
+        ),
+    );
 
-    let mut app = App { context: context.clone(), objects: Vec::new(), selected: None, status: String::new() };
+    let mut app = App {
+        context: context.clone(),
+        objects: Vec::new(),
+        selected: None,
+        status: String::new(),
+        bool_a: 0,
+        bool_b: 1,
+        bool_op: BooleanOp::Difference,
+        cut_axis: 2,
+        cut_fraction: 0.5,
+        show_cut_plane: true,
+    };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
     }
@@ -158,6 +265,30 @@ fn main() {
             app.status = format!("Eliminado {}", removed.name);
             app.selected = None;
         }
+        if let Some(obj) = actions.export.and_then(|i| app.objects.get(i)) {
+            let default_name = format!("{}.stl", obj.name.trim_end_matches(".stl"));
+            if let Some(path) = rfd::FileDialog::new()
+                .set_title("Exportar STL")
+                .add_filter("STL", &["stl"])
+                .set_file_name(default_name)
+                .save_file()
+            {
+                app.status = match obj.mesh.save_stl(&path) {
+                    Ok(()) => format!("Exportado {}", path.display()),
+                    Err(e) => format!("Error al exportar: {e}"),
+                };
+            }
+        }
+        if actions.boolean {
+            app.apply_boolean();
+        }
+        let cut_plane = app.cut_plane();
+        if actions.cut {
+            if let Some(plane) = cut_plane {
+                app.apply_cut(plane);
+            }
+        }
+        let cut_plane = app.cut_plane().filter(|_| app.show_cut_plane);
 
         // El visor 3D ocupa lo que deja libre el panel lateral.
         let panel_px = (panel_width * frame_input.device_pixel_ratio) as u32;
@@ -180,6 +311,10 @@ fn main() {
 
         let mut scene: Vec<&dyn Object> = app.objects.iter().filter(|o| o.visible).map(|o| &o.model as &dyn Object).collect();
         scene.push(&axes);
+        if let Some(plane) = &cut_plane {
+            cut_preview.set_transformation(plane.transform);
+            scene.push(&cut_preview);
+        }
 
         frame_input
             .screen()
@@ -191,6 +326,48 @@ fn main() {
         extra_frames = extra_frames.saturating_sub(1);
         FrameOutput { wait_next_event: extra_frames == 0, ..Default::default() }
     });
+}
+
+fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
+    ui.separator();
+    ui.label(egui::RichText::new("Booleanas").strong());
+    if app.objects.len() < 2 {
+        ui.weak("Se necesitan dos objetos");
+        return;
+    }
+    app.bool_a = app.bool_a.min(app.objects.len() - 1);
+    app.bool_b = app.bool_b.min(app.objects.len() - 1);
+
+    for (label, index) in [("A", &mut app.bool_a), ("B", &mut app.bool_b)] {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            egui::ComboBox::from_id_salt(label)
+                .selected_text(&app.objects[*index].name)
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for (i, obj) in app.objects.iter().enumerate() {
+                        ui.selectable_value(index, i, &obj.name);
+                    }
+                });
+        });
+    }
+    ui.horizontal_wrapped(|ui| {
+        for op in BooleanOp::ALL {
+            let text = if op == BooleanOp::Difference { "Resta A − B" } else { op.label() };
+            ui.radio_value(&mut app.bool_op, op, text);
+        }
+    });
+
+    let (a, b) = (&app.objects[app.bool_a], &app.objects[app.bool_b]);
+    let problem = if app.bool_a == app.bool_b {
+        Some("A y B deben ser objetos distintos")
+    } else if !a.topology.is_closed() || !b.topology.is_closed() {
+        Some("Ambas mallas deben ser cerradas")
+    } else {
+        None
+    };
+    let button = ui.add_enabled(problem.is_none(), egui::Button::new("Aplicar"));
+    actions.boolean = button.on_disabled_hover_text(problem.unwrap_or_default()).clicked();
 }
 
 fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
@@ -249,10 +426,37 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 ui.end_row();
             }
         });
-        if ui.button("Eliminar").clicked() {
-            actions.delete = app.selected;
-        }
+        ui.horizontal(|ui| {
+            if ui.button("Exportar STL…").clicked() {
+                actions.export = app.selected;
+            }
+            if ui.button("Eliminar").clicked() {
+                actions.delete = app.selected;
+            }
+        });
+        let closed = obj.topology.is_closed();
+
+        ui.separator();
+        ui.label(egui::RichText::new("Corte por plano").strong());
+        ui.horizontal(|ui| {
+            ui.label("Normal");
+            for (i, name) in AXES.iter().enumerate() {
+                ui.radio_value(&mut app.cut_axis, i, *name);
+            }
+        });
+        let axis = app.cut_axis;
+        let position = min[axis] + app.cut_fraction * (max[axis] - min[axis]);
+        ui.add(
+            egui::Slider::new(&mut app.cut_fraction, 0.0..=1.0)
+                .show_value(false)
+                .text(format!("{} = {position:.2}", AXES[axis])),
+        );
+        ui.checkbox(&mut app.show_cut_plane, "Mostrar plano");
+        let button = ui.add_enabled(closed, egui::Button::new("Cortar"));
+        actions.cut = button.on_disabled_hover_text("La malla debe ser cerrada").clicked();
     }
+
+    boolean_panel(ui, app, actions);
 
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         ui.weak("Izq: orbitar · Der/Medio: desplazar · Rueda: zoom");

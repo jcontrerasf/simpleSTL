@@ -1,0 +1,13 @@
+# Limita el paralelismo: compilar manifold3d (C++) con todos los núcleos
+# agotó la RAM (8 GB) y congeló el equipo el 2026-09-26.
+[build]
+jobs = 4
+
+[env]
+CMAKE_BUILD_PARALLEL_LEVEL = "2"
+NUM_JOBS = "2"
+# El build script de manifold-csg-sys llama a `cmake --build --parallel` sin
+# número (= `make -j` ilimitado) e ignora los límites de arriba. Por eso Manifold
+# se compila aparte con `scripts/build-manifold.sh` y se enlaza desde aquí.
+MANIFOLD_CSG_LIB_DIR = { value = "third_party/manifold-lib", relative = true }
+MANIFOLD_CSG_LIB_KIND = "static"

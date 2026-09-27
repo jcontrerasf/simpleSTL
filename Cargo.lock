@@ -220,6 +220,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -789,6 +798,35 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "manifold-csg"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ba4dd58c980405d5a23657a59106e2844a36d3c25b745ee7a0a3e0524e6bc4d"
+dependencies = [
+ "log",
+ "manifold-csg-sys",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "manifold-csg-sys"
+version = "3.5.105"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58f034b8af43be927e7651da0c18a0205e8942acf275550acc4a8300042dee51"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "manifold3d"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60441b37d0e7b95b5cdf23a15c3ddc6dfd581edcb5b6de209c7db12d9fa1f4ea"
+dependencies = [
+ "manifold-csg",
+]
 
 [[package]]
 name = "memchr"
@@ -1407,6 +1445,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 name = "simple_stl"
 version = "0.1.0"
 dependencies = [
+ "manifold3d",
  "rfd",
  "stl_io",
  "three-d",
