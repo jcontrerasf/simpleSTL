@@ -1,5 +1,6 @@
 mod camera;
 mod csg;
+mod manipulator;
 mod mesh;
 
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use three_d::*;
 
 use camera::CameraController;
 use csg::BooleanOp;
+use manipulator::{Manipulator, Mode, Pose};
 use mesh::{MeshData, Topology};
 
 const PALETTE: [[u8; 3]; 6] = [
@@ -23,7 +25,11 @@ const PALETTE: [[u8; 3]; 6] = [
 
 struct SceneObject {
     name: String,
+    /// Malla en coordenadas locales, centrada en el origen; `pose` la ubica en el mundo.
     mesh: MeshData,
+    pose: Pose,
+    /// Caja envolvente en el mundo, recalculada al cambiar la pose.
+    world_bbox: (Vec3, Vec3),
     topology: Topology,
     model: Gm<Mesh, PhysicalMaterial>,
     color: [u8; 3],
@@ -31,7 +37,11 @@ struct SceneObject {
 }
 
 impl SceneObject {
+    /// `mesh` viene en coordenadas del mundo; se centra y el desplazamiento pasa a la pose.
     fn new(context: &Context, name: String, mesh: MeshData, color: [u8; 3]) -> Self {
+        let (min, max) = mesh.bounding_box();
+        let center = (min + max) * 0.5;
+        let mesh = mesh.transformed(|p| p - center);
         let material = PhysicalMaterial::new_opaque(
             context,
             &CpuMaterial {
@@ -42,7 +52,29 @@ impl SceneObject {
             },
         );
         let model = Gm::new(Mesh::new(context, &mesh.to_cpu_mesh()), material);
-        Self { name, topology: mesh.topology(), mesh, model, color, visible: true }
+        let mut obj = Self {
+            name,
+            topology: mesh.topology(),
+            mesh,
+            pose: Pose::at(center),
+            world_bbox: (min, max),
+            model,
+            color,
+            visible: true,
+        };
+        obj.set_pose(obj.pose);
+        obj
+    }
+
+    fn set_pose(&mut self, pose: Pose) {
+        self.pose = pose;
+        self.model.set_transformation(pose.matrix());
+        self.world_bbox = self.world_mesh().bounding_box();
+    }
+
+    /// Malla en coordenadas del mundo: lo que usan booleanas, cortes y exportación.
+    fn world_mesh(&self) -> MeshData {
+        self.mesh.transformed(|p| self.pose.apply(p))
     }
 
     fn set_color(&mut self, color: [u8; 3]) {
@@ -65,6 +97,7 @@ struct App {
     /// Posición del plano de corte como fracción (0..1) de la caja del objeto seleccionado.
     cut_fraction: f32,
     show_cut_plane: bool,
+    manipulator_mode: Mode,
 }
 
 /// Plano de corte ya resuelto en coordenadas del mundo.
@@ -96,7 +129,7 @@ impl App {
 
     fn cut_plane(&self) -> Option<CutPlane> {
         let object = self.selected?;
-        let (min, max) = self.objects.get(object)?.mesh.bounding_box();
+        let (min, max) = self.objects.get(object)?.world_bbox;
         let axis = self.cut_axis;
         let offset = min[axis] + self.cut_fraction * (max[axis] - min[axis]);
 
@@ -122,7 +155,7 @@ impl App {
         let op = self.bool_op;
         let name = format!("{} {} {}", a.name, op.symbol(), b.name);
         let start = Instant::now();
-        match csg::boolean(&a.mesh, &b.mesh, op) {
+        match csg::boolean(&a.world_mesh(), &b.world_mesh(), op) {
             Ok(Some(mesh)) => {
                 self.status = format!("{} en {:.0?} ({} triángulos)", op.label(), start.elapsed(), mesh.triangles.len());
                 self.objects[self.bool_a].visible = false;
@@ -139,7 +172,7 @@ impl App {
         let axis = AXES[self.cut_axis];
         let base = obj.name.clone();
         let start = Instant::now();
-        match csg::split(&obj.mesh, plane.normal, plane.offset) {
+        match csg::split(&obj.world_mesh(), plane.normal, plane.offset) {
             Ok((positive, negative)) => {
                 if positive.is_none() || negative.is_none() {
                     self.status = "El plano no atraviesa el objeto".into();
@@ -160,7 +193,7 @@ impl App {
         self.objects
             .iter()
             .filter(|o| o.visible)
-            .map(|o| o.mesh.bounding_box())
+            .map(|o| o.world_bbox)
             .reduce(|(amin, amax), (bmin, bmax)| {
                 (
                     vec3(amin.x.min(bmin.x), amin.y.min(bmin.y), amin.z.min(bmin.z)),
@@ -177,6 +210,7 @@ struct UiActions {
     fit: bool,
     delete: Option<usize>,
     export: Option<usize>,
+    pose: Option<(usize, Pose)>,
     boolean: bool,
     cut: bool,
 }
@@ -185,6 +219,7 @@ fn main() {
     let window = Window::new(WindowSettings {
         title: "simpleSTL".to_string(),
         min_size: (640, 480),
+        initial_size: Some((1280, 800)),
         ..Default::default()
     })
     .unwrap();
@@ -217,6 +252,7 @@ fn main() {
         cut_axis: 2,
         cut_fraction: 0.5,
         show_cut_plane: true,
+        manipulator_mode: Mode::Both,
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -224,28 +260,69 @@ fn main() {
     let mut needs_fit = !app.objects.is_empty();
     // egui necesita un par de cuadros extra para asentar su layout tras cada evento.
     let mut extra_frames: u32 = 3;
+    let mut manipulator = Manipulator::new();
+    let mut panel_width = 0.0f32;
 
     window.render_loop(move |mut frame_input| {
         if !frame_input.events.is_empty() {
             extra_frames = 3;
         }
         let mut actions = UiActions::default();
-        let mut panel_width = 0.0;
+        let window_viewport = frame_input.viewport;
+        let dpr = frame_input.device_pixel_ratio;
+
+        // El visor 3D ocupa lo que deja libre el panel lateral (ancho del cuadro anterior).
+        let panel_px = (panel_width * dpr) as u32;
+        let viewport = Viewport {
+            x: panel_px as i32,
+            y: 0,
+            width: window_viewport.width.saturating_sub(panel_px).max(1),
+            height: window_viewport.height,
+        };
+        camera.set_viewport(viewport);
+
+        manipulator.mode = app.manipulator_mode;
+        manipulator.track_input(&frame_input.events, dpr, window_viewport.height);
+        let mut dragged_pose = None;
 
         gui.update(
             &mut frame_input.events,
             frame_input.accumulated_time,
-            frame_input.viewport,
-            frame_input.device_pixel_ratio,
+            window_viewport,
+            dpr,
             |ui| {
                 panel_width = egui::Panel::left("panel")
-                    .default_size(260.0)
+                    // Ancho fijo: si se ajusta al contenido, el visor cambia de tamaño entre cuadros.
+                    .exact_size(300.0)
                     .show_inside(ui, |ui| side_panel(ui, &mut app, &mut actions))
                     .response
                     .rect
                     .width();
+                let view_rect = egui::Rect::from_min_max(
+                    egui::pos2(panel_width, 0.0),
+                    egui::pos2(window_viewport.width as f32 / dpr, window_viewport.height as f32 / dpr),
+                );
+                let pose = app.selected.and_then(|i| app.objects.get(i)).filter(|o| o.visible).map(|o| o.pose);
+                dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, pose);
             },
         );
+
+        if let (Some(pose), Some(i)) = (dragged_pose, app.selected) {
+            app.objects[i].set_pose(pose);
+        }
+        if let Some((i, pose)) = actions.pose {
+            app.objects[i].set_pose(pose);
+        }
+        if let Some(click) = manipulator.consume_events(&mut frame_input.events) {
+            if click.position.x >= viewport.x as f32 {
+                // Selección con el ratón: el índice de geometría es la posición en `visible`.
+                let visible: Vec<usize> = (0..app.objects.len()).filter(|&i| app.objects[i].visible).collect();
+                let geometries = visible.iter().map(|&i| &app.objects[i].model.geometry);
+                if let Ok(hit) = pick(&context, &camera, click.position, geometries, Cull::None) {
+                    app.selected = hit.map(|h| visible[h.geometry_id as usize]);
+                }
+            }
+        }
 
         if actions.open {
             if let Some(paths) = rfd::FileDialog::new()
@@ -273,7 +350,7 @@ fn main() {
                 .set_file_name(default_name)
                 .save_file()
             {
-                app.status = match obj.mesh.save_stl(&path) {
+                app.status = match obj.world_mesh().save_stl(&path) {
                     Ok(()) => format!("Exportado {}", path.display()),
                     Err(e) => format!("Error al exportar: {e}"),
                 };
@@ -290,16 +367,8 @@ fn main() {
         }
         let cut_plane = app.cut_plane().filter(|_| app.show_cut_plane);
 
-        // El visor 3D ocupa lo que deja libre el panel lateral.
-        let panel_px = (panel_width * frame_input.device_pixel_ratio) as u32;
-        let viewport = Viewport {
-            x: panel_px as i32,
-            y: 0,
-            width: frame_input.viewport.width.saturating_sub(panel_px).max(1),
-            height: frame_input.viewport.height,
-        };
-        camera.set_viewport(viewport);
-        if actions.fit || needs_fit {
+        // El encuadre inicial espera a que el panel tenga su ancho real (no existe en el primer cuadro).
+        if actions.fit || (needs_fit && viewport.x > 0) {
             if let Some((min, max)) = app.bounding_box() {
                 control.fit(&mut camera, min, max);
                 let size = (max - min).magnitude();
@@ -371,6 +440,16 @@ fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
 }
 
 fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
+    egui::Panel::bottom("status").show_inside(ui, |ui| {
+        if !app.status.is_empty() {
+            ui.label(&app.status);
+        }
+        ui.weak("Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom");
+    });
+    egui::ScrollArea::vertical().show(ui, |ui| panel_contents(ui, app, actions));
+}
+
+fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     ui.heading("simpleSTL");
     ui.horizontal(|ui| {
         actions.open = ui.button("Abrir STL…").clicked();
@@ -398,8 +477,8 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     if let Some(obj) = app.selected.and_then(|i| app.objects.get(i)) {
         ui.separator();
         ui.label(egui::RichText::new(&obj.name).strong());
-        let (min, max) = obj.mesh.bounding_box();
-        let size = max - min;
+        let (local_min, local_max) = obj.mesh.bounding_box();
+        let size = local_max - local_min;
         egui::Grid::new("info").num_columns(2).show(ui, |ui| {
             ui.label("Triángulos");
             ui.label(obj.mesh.triangles.len().to_string());
@@ -426,6 +505,32 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 ui.end_row();
             }
         });
+
+        let mut pose = obj.pose;
+        let mut pose_changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Posición");
+            for c in [&mut pose.translation.x, &mut pose.translation.y, &mut pose.translation.z] {
+                pose_changed |= ui.add(egui::DragValue::new(c).speed(0.1).max_decimals(2)).changed();
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Manipulador");
+            for mode in Mode::ALL {
+                ui.radio_value(&mut app.manipulator_mode, mode, mode.label());
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Restablecer rotación").clicked() {
+                pose.rotation = Pose::at(pose.translation).rotation;
+                pose_changed = true;
+            }
+        });
+        if pose_changed {
+            actions.pose = app.selected.map(|i| (i, pose));
+        }
+        ui.weak("Ctrl al arrastrar: pasos de 1 / 15°");
+
         ui.horizontal(|ui| {
             if ui.button("Exportar STL…").clicked() {
                 actions.export = app.selected;
@@ -444,6 +549,7 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 ui.radio_value(&mut app.cut_axis, i, *name);
             }
         });
+        let (min, max) = obj.world_bbox;
         let axis = app.cut_axis;
         let position = min[axis] + app.cut_fraction * (max[axis] - min[axis]);
         ui.add(
@@ -457,11 +563,4 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     }
 
     boolean_panel(ui, app, actions);
-
-    ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        ui.weak("Izq: orbitar · Der/Medio: desplazar · Rueda: zoom");
-        if !app.status.is_empty() {
-            ui.label(&app.status);
-        }
-    });
 }

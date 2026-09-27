@@ -70,6 +70,20 @@ impl MeshData {
         stl_io::write_stl(&mut BufWriter::new(file), triangles.iter()).map_err(|e| format!("error al escribir: {e}"))
     }
 
+    /// Copia con cada vértice transformado por `f`. `f` debe preservar la orientación
+    /// (traslaciones y rotaciones), o las normales quedarían invertidas.
+    pub fn transformed(&self, f: impl Fn(Vec3) -> Vec3) -> MeshData {
+        let vertices = self
+            .vertices
+            .iter()
+            .map(|&[x, y, z]| {
+                let p = f(vec3(x, y, z));
+                [p.x, p.y, p.z]
+            })
+            .collect();
+        MeshData { vertices, triangles: self.triangles.clone() }
+    }
+
     fn vertex(&self, i: u32) -> Vec3 {
         let [x, y, z] = self.vertices[i as usize];
         vec3(x, y, z)
