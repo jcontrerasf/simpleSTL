@@ -102,6 +102,11 @@ struct App {
     show_cut_plane: bool,
     manipulator_mode: Mode,
     grid_spacing: f32,
+    /// Objeto que se está renombrando en la lista, con el texto en edición.
+    renaming: Option<(usize, String)>,
+    /// El campo de renombrar debe tomar el foco en el próximo cuadro (solo al abrirse:
+    /// pedirlo siempre impediría que Enter lo suelte y confirme).
+    rename_needs_focus: bool,
 }
 
 /// Plano de corte ya resuelto en coordenadas del mundo.
@@ -259,6 +264,8 @@ fn main() {
         show_cut_plane: true,
         manipulator_mode: Mode::Both,
         grid_spacing: ground.spacing,
+        renaming: None,
+        rename_needs_focus: false,
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -317,6 +324,11 @@ fn main() {
             },
         );
 
+        // Animaciones de egui (menús, tooltips, cursor de texto): seguir dibujando mientras las pida.
+        // (2 y no 1: al final del cuadro se descuenta uno.)
+        if gui.context().requested_repaint_last_pass() || gui.context().has_requested_repaint() {
+            extra_frames = extra_frames.max(2);
+        }
         if let (Some(pose), Some(i)) = (dragged_pose, app.selected) {
             app.objects[i].set_pose(pose);
         }
@@ -357,7 +369,13 @@ fn main() {
         if let Some(i) = actions.delete {
             let removed = app.objects.remove(i);
             app.status = format!("Eliminado {}", removed.name);
-            app.selected = None;
+            // Los índices posteriores se corren en uno.
+            app.selected = match app.selected {
+                Some(s) if s == i => None,
+                Some(s) if s > i => Some(s - 1),
+                s => s,
+            };
+            app.renaming = None;
         }
         if let Some(obj) = actions.export.and_then(|i| app.objects.get(i)) {
             let default_name = format!("{}.stl", obj.name.trim_end_matches(".stl"));
@@ -473,6 +491,64 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     egui::ScrollArea::vertical().show(ui, |ui| panel_contents(ui, app, actions));
 }
 
+#[derive(Clone, Copy)]
+enum ObjectAction {
+    Rename,
+    Export,
+    Delete,
+}
+
+/// Menú de un objeto de la lista (botón "…" o clic derecho sobre el nombre).
+fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
+    let mut action = None;
+    if ui.button("Renombrar").clicked() {
+        action = Some(ObjectAction::Rename);
+    }
+    if ui.button("Exportar STL…").clicked() {
+        action = Some(ObjectAction::Export);
+    }
+    if ui.button("Eliminar").clicked() {
+        action = Some(ObjectAction::Delete);
+    }
+    if action.is_some() {
+        ui.close();
+    }
+    action
+}
+
+/// Botón con forma de ojo para mostrar/ocultar; tachado cuando el objeto está oculto.
+/// Se dibuja a mano porque la fuente por defecto de egui no garantiza el emoji.
+fn eye_toggle(ui: &mut egui::Ui, visible: &mut bool) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(20.0, 16.0), egui::Sense::click());
+    if response.clicked() {
+        *visible = !*visible;
+        response.mark_changed();
+    }
+    let visuals = ui.visuals();
+    let color = if response.hovered() {
+        visuals.strong_text_color()
+    } else if *visible {
+        visuals.text_color()
+    } else {
+        visuals.weak_text_color()
+    };
+    let (c, half_w, half_h, n) = (rect.center(), 8.0, 4.5, 12);
+    let curve = |k: usize, sign: f32| {
+        let t = k as f32 / n as f32;
+        egui::pos2(c.x - half_w + 2.0 * half_w * t, c.y + sign * half_h * (std::f32::consts::PI * t).sin())
+    };
+    let mut outline: Vec<egui::Pos2> = (0..=n).map(|k| curve(k, -1.0)).collect();
+    outline.extend((1..n).rev().map(|k| curve(k, 1.0)));
+    let painter = ui.painter();
+    painter.add(egui::Shape::closed_line(outline, egui::Stroke::new(1.3_f32, color)));
+    if *visible {
+        painter.circle_filled(c, 2.3, color);
+    } else {
+        painter.line_segment([c + egui::vec2(-7.0, 6.0), c + egui::vec2(7.0, -6.0)], egui::Stroke::new(1.5_f32, color));
+    }
+    response.on_hover_text(if *visible { "Ocultar" } else { "Mostrar" })
+}
+
 fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     ui.heading("simpleSTL");
     ui.horizontal(|ui| {
@@ -487,13 +563,53 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     }
     for (i, obj) in app.objects.iter_mut().enumerate() {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut obj.visible, "");
+            eye_toggle(ui, &mut obj.visible);
             let mut color = obj.color;
             if ui.color_edit_button_srgb(&mut color).changed() {
                 obj.set_color(color);
             }
-            if ui.selectable_label(app.selected == Some(i), &obj.name).clicked() {
-                app.selected = Some(i);
+
+            if let Some((_, text)) = app.renaming.as_mut().filter(|(r, _)| *r == i) {
+                let edit = ui.add(egui::TextEdit::singleline(text).desired_width(ui.available_width() - 8.0));
+                if std::mem::take(&mut app.rename_needs_focus) {
+                    edit.request_focus();
+                }
+                if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+                    app.renaming = None;
+                } else if edit.lost_focus() {
+                    // Enter o clic afuera confirman; un nombre vacío deja el anterior.
+                    let name = text.trim();
+                    if !name.is_empty() {
+                        obj.name = name.to_string();
+                    }
+                    app.renaming = None;
+                }
+                return;
+            }
+
+            let mut menu_action = None;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("…", |ui| menu_action = object_menu(ui));
+                let label = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.selectable_label(app.selected == Some(i), &obj.name)
+                });
+                let label = label.inner;
+                if label.clicked() {
+                    app.selected = Some(i);
+                }
+                if label.double_clicked() {
+                    menu_action = Some(ObjectAction::Rename);
+                }
+                label.context_menu(|ui| menu_action = object_menu(ui).or(menu_action));
+            });
+            match menu_action {
+                Some(ObjectAction::Rename) => {
+                    app.renaming = Some((i, obj.name.clone()));
+                    app.rename_needs_focus = true;
+                }
+                Some(ObjectAction::Export) => actions.export = Some(i),
+                Some(ObjectAction::Delete) => actions.delete = Some(i),
+                None => {}
             }
         });
     }
@@ -555,14 +671,6 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         }
         ui.weak("Ctrl al arrastrar: pasos de 1 / 15°");
 
-        ui.horizontal(|ui| {
-            if ui.button("Exportar STL…").clicked() {
-                actions.export = app.selected;
-            }
-            if ui.button("Eliminar").clicked() {
-                actions.delete = app.selected;
-            }
-        });
         let closed = obj.topology.is_closed();
 
         ui.separator();
