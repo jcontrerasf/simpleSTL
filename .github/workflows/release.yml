@@ -40,6 +40,8 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package AppImage
+        env:
+          OUTPUT: simpleSTL-x86_64.AppImage
         run: |
           wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy-x86_64.AppImage
@@ -48,7 +50,6 @@ jobs:
             --desktop-file packaging/simplestl.desktop \
             --icon-file packaging/simplestl.svg \
             --output appimage
-          mv simpleSTL-*.AppImage simpleSTL-x86_64.AppImage
 
       - uses: actions/upload-artifact@v4
         with:
