@@ -419,6 +419,24 @@ impl App {
         self.tool = None;
     }
 
+    /// Aplica la pose que entrega el gizmo al arrastrar el plano de corte. Si se está
+    /// desplazando (no inclinando), se engancha a la marca de regla más cercana al punto
+    /// donde el plano cruza cada regla.
+    fn drag_cut_plane(&mut self, raw: Pose, tolerance: f32) {
+        let start = *self.drag_start.get_or_insert(self.cut_pose);
+        self.drag_raw = Some(raw);
+        self.cut_pose = raw;
+        self.snapped_marks.clear();
+        if (raw.translation - start.translation).magnitude() < 1e-6 {
+            return;
+        }
+        let normal = raw.rotation * vec3(0.0, 0.0, 1.0);
+        if let Some((shift, mark)) = measure::plane_snap(&self.rulers, normal, raw.translation, tolerance) {
+            self.cut_pose.translation += shift;
+            self.snapped_marks.push(mark);
+        }
+    }
+
     /// Aplica la pose que entrega el gizmo al arrastrar con Mover, enganchando el objeto a
     /// las marcas de las reglas en los ejes en que se está moviendo. `tolerance` es la
     /// distancia de enganche en unidades del mundo.
@@ -810,12 +828,9 @@ fn main() {
         }
         if let (Some(pose), Some(i)) = (dragged_pose, app.selected) {
             match app.tool {
-                Some(Tool::Cut) => app.cut_pose = pose,
-                Some(Tool::Move) => {
-                    // Enganche a las reglas: 10 puntos de pantalla, en unidades del mundo.
-                    let tolerance = 10.0 * dpr * world_per_pixel(&camera, pose.translation);
-                    app.drag_to(i, pose, tolerance);
-                }
+                // Enganche a las reglas: 10 puntos de pantalla, en unidades del mundo.
+                Some(Tool::Cut) => app.drag_cut_plane(pose, 10.0 * dpr * world_per_pixel(&camera, pose.translation)),
+                Some(Tool::Move) => app.drag_to(i, pose, 10.0 * dpr * world_per_pixel(&camera, pose.translation)),
                 _ => app.objects[i].set_pose(pose),
             }
         }
@@ -1060,7 +1075,7 @@ fn gizmo_target(app: &App) -> Option<(Pose, GizmoSetup)> {
     match app.tool? {
         Tool::Move => Some((app.drag_raw.unwrap_or(obj.pose), GizmoSetup::translate())),
         Tool::Rotate => Some((obj.pose, GizmoSetup::rotate())),
-        Tool::Cut => Some((app.cut_pose, GizmoSetup::cut_plane())),
+        Tool::Cut => Some((app.drag_raw.unwrap_or(app.cut_pose), GizmoSetup::cut_plane())),
         Tool::Boolean | Tool::PlaceOnFace | Tool::Measure | Tool::Ruler => None,
     }
 }
@@ -1621,6 +1636,12 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
         "Arrastra la flecha para desplazar el plano y los anillos para inclinarlo.",
         "Drag the arrow to move the plane and the rings to tilt it.",
     ));
+    if !app.rulers.is_empty() {
+        ui.weak(tr(
+            "Al desplazarlo, se engancha a las marcas de las reglas que cruza.",
+            "While moving it, it snaps to the marks of the rulers it crosses.",
+        ));
+    }
     let button = ui.add_enabled(closed, egui::Button::new(tr("Cortar", "Cut")));
     actions.cut = button.on_disabled_hover_text(tr("La malla debe ser cerrada", "The mesh must be closed")).clicked();
 }

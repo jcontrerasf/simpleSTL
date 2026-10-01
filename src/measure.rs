@@ -151,6 +151,32 @@ pub fn ruler_snap(rulers: &[Ruler], points: &[Vec3], tolerance: f32, axes: &[Axi
     result
 }
 
+/// Engancha un plano (de normal unitaria `normal` que pasa por `point`) a las reglas:
+/// busca la regla y la marca más cercanas al punto donde el plano cruza la regla, y
+/// devuelve cuánto desplazar el plano (a lo largo de su normal) para que pase por esa
+/// marca, y la marca. Las reglas casi paralelas al plano no cuentan.
+pub fn plane_snap(rulers: &[Ruler], normal: Vec3, point: Vec3, tolerance: f32) -> Option<(Vec3, Vec3)> {
+    let offset = normal.dot(point);
+    rulers
+        .iter()
+        .filter_map(|r| {
+            let across = normal.dot(r.direction());
+            if across.abs() < 0.1 {
+                return None;
+            }
+            // Cruce del plano con la recta de la regla, medido desde su origen.
+            let s = (offset - normal.dot(r.origin)) / across;
+            let k = (s / r.spacing.max(MIN_SPACING)).round();
+            if k < 0.0 || k > (r.mark_count() - 1) as f32 {
+                return None;
+            }
+            let distance = k * r.spacing - s;
+            (distance.abs() <= tolerance).then(|| (distance, normal * (distance * across), r.mark(k as u32)))
+        })
+        .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
+        .map(|(_, shift, mark)| (shift, mark))
+}
+
 /// Número sin decimales sobrantes: "10", "2.5", "0.25".
 pub fn format_length(v: f32) -> String {
     let text = format!("{v:.2}");
@@ -292,6 +318,23 @@ mod tests {
         assert!((only_x.offset - vec3(0.4, 0.0, 0.0)).magnitude() < 1e-4);
         // Más allá del final de la regla no hay marcas.
         assert!(ruler_snap(&rulers, &[vec3(70.0, 0.0, 0.0)], 0.5, &[Axis::X]).marks.is_empty());
+    }
+
+    #[test]
+    fn cut_plane_snaps_where_it_crosses_a_ruler() {
+        let ruler = [Ruler { origin: vec3(0.0, 0.0, 0.0), axis: Axis::Z, sign: 1.0, length: 30.0, spacing: 5.0 }];
+        // Plano horizontal en z = 9.7: engancha a la marca 10.
+        let (shift, mark) = plane_snap(&ruler, vec3(0.0, 0.0, 1.0), vec3(3.0, 4.0, 9.7), 0.5).unwrap();
+        assert!((shift - vec3(0.0, 0.0, 0.3)).magnitude() < 1e-4, "{shift:?}");
+        assert!((mark - vec3(0.0, 0.0, 10.0)).magnitude() < 1e-4);
+        // Plano inclinado 45°: cruza la regla en z = 9.7 y también engancha a la marca 10.
+        let n = vec3(1.0, 0.0, 1.0).normalize();
+        let (shift, _) = plane_snap(&ruler, n, vec3(0.0, 0.0, 9.7), 0.5).unwrap();
+        let moved = vec3(0.0, 0.0, 9.7) + shift;
+        assert!((n.dot(moved) - n.dot(vec3(0.0, 0.0, 10.0))).abs() < 1e-4);
+        // Lejos de una marca, o paralelo a la regla, no engancha.
+        assert!(plane_snap(&ruler, vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, 7.5), 0.5).is_none());
+        assert!(plane_snap(&ruler, vec3(1.0, 0.0, 0.0), vec3(0.0, 0.0, 10.0), 0.5).is_none());
     }
 
     #[test]

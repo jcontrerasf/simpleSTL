@@ -199,7 +199,10 @@ El overlay (`draw_overlays`) se dibuja con egui en una capa propia, como el gizm
 **Enganche al mover:** transform-gizmo aplica *incrementos* a la pose que recibe. Si
 se le diera la pose ya enganchada, el objeto se desfasaría del cursor. `App::drag_raw`
 guarda la pose cruda que entrega el gizmo, y `gizmo_target` se la devuelve; al objeto
-se le aplica la cruda más el desplazamiento de `measure::ruler_snap`. La tolerancia son
+se le aplica la cruda más el desplazamiento de `measure::ruler_snap`. El plano de corte
+usa el mismo mecanismo con `measure::plane_snap`: busca dónde cruza el plano cada regla
+y lo desplaza a lo largo de su normal hasta la marca más cercana. Solo al desplazarlo, no
+al inclinarlo. La tolerancia son
 10 puntos de pantalla, convertidos a unidades del mundo con `world_per_pixel`.
 
 ### Booleanas y cortes

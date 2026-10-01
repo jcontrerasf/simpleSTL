@@ -150,6 +150,10 @@ Aparece un plano amarillo por el centro del objeto, con su propio manipulador:
 - la **flecha** lo desplaza a lo largo de su normal;
 - los **anillos** lo inclinan en cualquier ángulo.
 
+Si hay reglas, al desplazarlo con la flecha se engancha a la marca más cercana al punto
+donde cruza cada regla, también si está inclinado. Las reglas casi paralelas al plano
+no cuentan.
+
 En el panel:
 
 - *Orientar X / Y / Z* pone la normal según ese eje;
@@ -214,6 +218,8 @@ ignoran.
   cercana cuando está a menos de 10 píxeles. Se enganchan los bordes y el centro de su
   caja envolvente, sus esquinas y sus centros de agujeros. Solo en los ejes que se
   están moviendo, y la marca enganchada se resalta.
+- **Cortar con reglas**: el plano de corte también se engancha a las marcas al
+  desplazarlo (ver *Corte*).
 - Las reglas no entran en el historial de deshacer.
 
 ## Deshacer y rehacer
