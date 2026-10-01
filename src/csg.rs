@@ -110,6 +110,38 @@ pub fn cylinder(radius_bottom: f32, radius_top: f32, height: f32, segments: u32)
     from_manifold(&Manifold::cylinder(height as f64, radius_bottom as f64, radius_top as f64, segments as i32, true))
 }
 
+/// Tubo a lo largo de Z, centrado en el origen: cilindro con un agujero pasante.
+/// `radius_inner` debe ser menor que `radius_outer`.
+pub fn tube(radius_outer: f32, radius_inner: f32, height: f32, segments: u32) -> Option<MeshData> {
+    let (h, n) = (height as f64, segments as i32);
+    let outer = Manifold::cylinder(h, radius_outer as f64, radius_outer as f64, n, true);
+    // Más alto que el exterior, para que no queden tapas coplanares de espesor nulo.
+    let hole = Manifold::cylinder(h * 2.0, radius_inner as f64, radius_inner as f64, n, true);
+    from_manifold(&outer.boolean(&hole, OpType::Subtract))
+}
+
+/// Paralelepípedo centrado en el origen con las aristas verticales redondeadas con
+/// `radius`. Con `radius` igual a la mitad del lado menor, la base es una ranura (dos
+/// semicírculos unidos por rectas). `segments` es por vuelta completa.
+pub fn rounded_box(x: f32, y: f32, z: f32, radius: f32, segments: u32) -> Option<MeshData> {
+    if radius <= 0.0 {
+        return cube(x, y, z);
+    }
+    // Es convexo: basta la envolvente de los arcos de las cuatro esquinas, arriba y abajo.
+    let (cx, cy) = (x / 2.0 - radius, y / 2.0 - radius);
+    let steps = (segments / 4).max(1);
+    let mut points = Vec::new();
+    for (quarter, (sx, sy)) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)].into_iter().enumerate() {
+        for k in 0..=steps {
+            let angle = std::f32::consts::FRAC_PI_2 * (quarter as f32 + k as f32 / steps as f32);
+            let (px, py) = (sx * cx + radius * angle.cos(), sy * cy + radius * angle.sin());
+            points.push([px, py, -z / 2.0]);
+            points.push([px, py, z / 2.0]);
+        }
+    }
+    convex_hull(&points)
+}
+
 /// Envolvente convexa de un conjunto de puntos.
 pub fn convex_hull(points: &[[f32; 3]]) -> Option<MeshData> {
     let points: Vec<[f64; 3]> = points.iter().map(|p| p.map(|c| c as f64)).collect();

@@ -100,8 +100,8 @@ Para probarlo está `samples/cubo_roto.stl`.
 
 ## Primitivas
 
-**Primitivas** → *Cubo*, *Esfera*, *Cilindro* o *Cono*. La pieza aparece apoyada en
-la base, a la derecha de lo que ya hay en la escena.
+**Primitivas** → *Cubo*, *Esfera*, *Cilindro*, *Cono*, *Tubo* o *Caja redondeada*. La
+pieza aparece apoyada en la base, a la derecha de lo que ya hay en la escena.
 
 Al seleccionar una primitiva aparece la sección **Dimensiones**:
 
@@ -111,6 +111,15 @@ Al seleccionar una primitiva aparece la sección **Dimensiones**:
 | Esfera | Radio, Segmentos |
 | Cilindro | Radio, Alto, Segmentos |
 | Cono | Radio inferior, Radio superior (0 = punta), Alto, Segmentos |
+| Tubo | Radio exterior, Radio del agujero, Alto, Segmentos |
+| Caja redondeada | Ancho (X), Fondo (Y), Alto (Z), Radio de esquinas, Segmentos |
+
+El **tubo** es un cilindro con un agujero pasante, útil para postes de tornillos. El
+agujero siempre queda más angosto que el tubo.
+
+La **caja redondeada** tiene las aristas verticales redondeadas. Con radio 0 es una caja
+común, y con el radio máximo (la mitad del lado menor) es una ranura extruida: dos
+semicírculos unidos por rectas. Si el radio no cabe, se ajusta solo.
 
 Al cambiar un valor, la base de la pieza se queda a la misma altura. Después de un
 corte o una booleana, el resultado ya no es una primitiva y sus dimensiones no se

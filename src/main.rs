@@ -1228,8 +1228,28 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
             ui.label(tr("Segmentos", "Segments"));
             segments_changed |= ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
         }
+        Primitive::Tube { radius_outer, radius_inner, height, segments } => {
+            length(ui, tr("Radio exterior", "Outer radius"), radius_outer);
+            length(ui, tr("Radio del agujero", "Hole radius"), radius_inner);
+            length(ui, tr("Alto", "Height"), height);
+            ui.label(tr("Segmentos", "Segments"));
+            segments_changed = ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
+        }
+        Primitive::RoundedBox { size, radius, segments } => {
+            let names = [tr("Ancho (X)", "Width (X)"), tr("Fondo (Y)", "Depth (Y)"), tr("Alto (Z)", "Height (Z)")];
+            for (name, value) in names.into_iter().zip(size.iter_mut()) {
+                length(ui, name, value);
+            }
+            // 0 deja esquinas vivas; la mitad del lado menor, una ranura.
+            ui.label(tr("Radio de esquinas", "Corner radius"));
+            let drag = egui::DragValue::new(radius).range(0.0..=f32::MAX).speed(0.1).max_decimals(2);
+            segments_changed |= ui.add(drag).changed();
+            ui.end_row();
+            ui.label(tr("Segmentos", "Segments"));
+            segments_changed |= ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
+        }
     });
-    (changed || segments_changed).then_some(primitive)
+    (changed || segments_changed).then(|| primitive.normalized())
 }
 
 /// Opciones de la herramienta activa (solo esa) para el objeto seleccionado.
