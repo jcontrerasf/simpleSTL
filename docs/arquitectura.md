@@ -19,7 +19,7 @@ primitivas).
 | `src/toolbar.rs` | `Tool` y la barra superior |
 | `src/history.rs` | `History<T>`: pilas de deshacer y rehacer con límite |
 | `src/i18n.rs` | Idioma de la interfaz (español/inglés): detección y `tr(es, en)` |
-| `src/repair.rs` | Reparación de mallas: soldadura, duplicados, orientación, agujeros |
+| `src/repair.rs` | Reparación de mallas: soldadura, duplicados, orientación, agujeros, fusión de piezas |
 | `src/ground.rs` | Base translúcida y grilla en z = 0 |
 
 ## Modelo de datos
@@ -168,12 +168,19 @@ lo que queda entre la cámara y el objetivo.
    nuevo en el centroide, recorriendo el borde al revés para quedar consistentes.
 5. **Hacia afuera**: por pieza conexa (unión-búsqueda por vértices), si el volumen
    con signo es negativo se invierten todas sus caras.
+6. **Fusionar**: si no quedan bordes, `csg::merge_parts` separa la malla en piezas
+   con `Manifold::decompose` y las une con `Manifold::batch_union`. Cada pieza es un
+   sólido válido aunque juntas se intersequen; unir la malla completa consigo misma,
+   en cambio, deja un resultado erróneo. Si Manifold rechaza la malla, este paso se
+   omite.
 
 ### Booleanas y cortes
 
 `csg.rs` convierte `MeshData` a `Manifold` en f64. Manifold rechaza las mallas que
 no son cerradas, y la interfaz lo anticipa con `MeshData::topology`: cada arista
-dirigida debe aparecer una vez y su inversa también. `split` recibe cualquier
+dirigida debe aparecer tantas veces como su inversa. Lo normal es una vez cada una;
+dos y dos corresponde a dos sólidos que se tocan por una arista, que Manifold acepta
+emparejando las caras. `split` recibe cualquier
 normal, así que los cortes inclinados no necesitan código especial.
 
 ## Compilación de Manifold

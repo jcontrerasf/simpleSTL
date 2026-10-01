@@ -1,14 +1,18 @@
 //! Reparación de mallas defectuosas, típicas de STL exportados sin cuidado.
 //!
 //! Pasos, en orden: soldar vértices casi iguales, quitar triángulos degenerados y
-//! duplicados, orientar las caras de forma consistente, rellenar agujeros y orientar
-//! cada pieza hacia afuera. No resuelve aristas compartidas por más de dos caras
-//! (geometría no-manifold real); eso queda indicado en la topología final.
+//! duplicados, orientar las caras de forma consistente, rellenar agujeros, orientar
+//! cada pieza hacia afuera y, si la malla quedó cerrada, fusionar sus piezas sueltas en
+//! un solo sólido. Muchos CAD exportan un grupo de cuerpos que se tocan o se superponen
+//! (postes apoyados en una base, paredes que se tocan por una arista): se imprime bien,
+//! porque el slicer une los contornos de cada capa, pero las booleanas necesitan un
+//! sólido único.
 
 use std::collections::{HashMap, VecDeque};
 
 use three_d::{InnerSpace, Vec3};
 
+use crate::csg;
 use crate::mesh::{MeshData, Topology};
 
 #[derive(Clone, Copy, Debug)]
@@ -17,13 +21,15 @@ pub struct RepairReport {
     pub removed_triangles: usize,
     pub flipped_triangles: usize,
     pub holes_filled: usize,
+    /// Piezas sueltas fusionadas en un solo sólido (0 si había una sola).
+    pub merged_parts: usize,
     /// Topología después de reparar.
     pub topology: Topology,
 }
 
 impl RepairReport {
     pub fn changed_anything(&self) -> bool {
-        self.welded_vertices + self.removed_triangles + self.flipped_triangles + self.holes_filled > 0
+        self.welded_vertices + self.removed_triangles + self.flipped_triangles + self.holes_filled + self.merged_parts > 0
     }
 }
 
@@ -40,9 +46,18 @@ pub fn repair(mesh: &MeshData) -> (MeshData, RepairReport) {
     let holes_filled = fill_holes(&mut vertices, &mut triangles);
     flipped_triangles += orient_outward(&vertices, &mut triangles);
 
-    let repaired = MeshData { vertices, triangles };
+    let mut repaired = MeshData { vertices, triangles };
+    let mut merged_parts = 0;
+    if repaired.topology().boundary_edges == 0 {
+        // Si Manifold la rechaza igual, se deja la malla como quedó.
+        if let Ok(Some((merged, parts))) = csg::merge_parts(&repaired) {
+            repaired = merged;
+            merged_parts = parts;
+        }
+    }
     let topology = repaired.topology();
-    (repaired, RepairReport { welded_vertices, removed_triangles, flipped_triangles, holes_filled, topology })
+    let report = RepairReport { welded_vertices, removed_triangles, flipped_triangles, holes_filled, merged_parts, topology };
+    (repaired, report)
 }
 
 fn to_vec(p: [f32; 3]) -> Vec3 {
@@ -353,6 +368,42 @@ mod tests {
         let mesh = MeshData::load_stl(Path::new("samples/cubo_roto.stl")).unwrap();
         assert!(!mesh.topology().is_closed());
         assert_repaired_cube(&mesh);
+    }
+
+    /// Dos cubos de 20 en una sola malla, el segundo desplazado `offset`.
+    fn two_cubes(offset: Vec3) -> MeshData {
+        let (a, b) = (cube(), cube().transformed(|p| p + offset));
+        let n = a.vertices.len() as u32;
+        let vertices = a.vertices.iter().chain(&b.vertices).copied().collect();
+        let triangles = a.triangles.iter().copied().chain(b.triangles.iter().map(|t| t.map(|i| i + n))).collect();
+        MeshData { vertices, triangles }
+    }
+
+    #[test]
+    fn overlapping_parts_are_merged() {
+        let mesh = two_cubes(Vec3::new(10.0, 10.0, 10.0));
+        let (fixed, report) = repair(&mesh);
+        assert_eq!(report.merged_parts, 2);
+        assert!(report.topology.is_closed(), "{report:?}");
+        // 2 × 8000 menos el cubo de 10 en común.
+        assert!((fixed.volume() - 15000.0).abs() < 1e-1, "volumen {}", fixed.volume());
+    }
+
+    #[test]
+    fn parts_touching_along_an_edge_are_usable() {
+        // Comparten la arista vertical en x = y = 20: tras soldar, cuatro caras la usan.
+        let mesh = weld_mesh(&two_cubes(Vec3::new(20.0, 20.0, 0.0)));
+        assert!(mesh.topology().is_closed());
+        let (fixed, report) = repair(&mesh);
+        assert_eq!(report.merged_parts, 2);
+        assert!(report.topology.is_closed(), "{report:?}");
+        assert!((fixed.volume() - 16000.0).abs() < 1e-1, "volumen {}", fixed.volume());
+    }
+
+    fn weld_mesh(mesh: &MeshData) -> MeshData {
+        let (vertices, remap) = weld(&mesh.vertices);
+        let triangles = mesh.triangles.iter().map(|t| t.map(|i| remap[i as usize])).collect();
+        MeshData { vertices, triangles }
     }
 
     #[test]

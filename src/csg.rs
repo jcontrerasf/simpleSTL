@@ -71,6 +71,22 @@ pub fn boolean(a: &MeshData, b: &MeshData, op: BooleanOp) -> Result<Option<MeshD
     Ok(from_manifold(&result))
 }
 
+/// Fusiona en un solo sólido las piezas sueltas de una malla cerrada (p. ej. un STL
+/// exportado como grupo de cuerpos que se tocan o se superponen). Devuelve la malla
+/// fusionada y cuántas piezas tenía, o `Ok(None)` si ya era una sola pieza.
+///
+/// Cada pieza por separado es un sólido válido aunque juntas se intersequen, así que se
+/// unen pieza a pieza; unir la malla completa consigo misma daría un resultado erróneo.
+pub fn merge_parts(mesh: &MeshData) -> Result<Option<(MeshData, usize)>, String> {
+    let parts = to_manifold(mesh)?.decompose();
+    if parts.len() < 2 {
+        return Ok(None);
+    }
+    let merged = Manifold::batch_union(&parts);
+    merged.status().map_err(|e| format!("{}: {e}", tr("falló la operación", "the operation failed")))?;
+    Ok(from_manifold(&merged).map(|m| (m, parts.len())))
+}
+
 /// Corta por el plano `normal · p = offset` y cierra ambas caras del corte.
 /// Devuelve (lado positivo, lado negativo); un lado es `None` si queda vacío.
 pub fn split(mesh: &MeshData, normal: [f64; 3], offset: f64) -> Result<(Option<MeshData>, Option<MeshData>), String> {

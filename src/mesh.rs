@@ -23,7 +23,10 @@ pub struct MeshData {
 pub struct Topology {
     /// Aristas usadas por un solo triángulo (agujeros en la superficie).
     pub boundary_edges: usize,
-    /// Aristas compartidas por más de dos triángulos o con orientación inconsistente.
+    /// Aristas cuyos triángulos no se pueden emparejar de a dos con orientaciones opuestas
+    /// (caras invertidas o más caras en un sentido que en el otro). Una arista con cuatro
+    /// caras bien emparejadas (dos sólidos que se tocan por una arista) no cuenta: Manifold
+    /// la acepta, y al cargar un STL `stl_io` une los vértices de esas aristas.
     pub bad_edges: usize,
 }
 
@@ -115,10 +118,10 @@ impl MeshData {
         let mut bad_edges = 0;
         for (&(a, b), &count) in &directed {
             let reverse = directed.get(&(b, a)).copied().unwrap_or(0);
-            if count > 1 || reverse > 1 {
-                bad_edges += 1;
-            } else if reverse == 0 {
+            if count == 1 && reverse == 0 {
                 boundary_edges += 1;
+            } else if count != reverse {
+                bad_edges += 1;
             }
         }
         Topology { boundary_edges, bad_edges }

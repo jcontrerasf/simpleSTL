@@ -29,7 +29,8 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
 - **Primitivas** paramétricas cuyas dimensiones se pueden editar después de crearlas.
 - **Diagnóstico y reparación de mallas**: indica si la malla es cerrada (condición
   necesaria para cortes y booleanas) o tiene normales invertidas. *Reparar malla*
-  suelda vértices, quita triángulos duplicados, orienta las caras y cierra agujeros.
+  suelda vértices, quita triángulos duplicados, orienta las caras, cierra agujeros y
+  fusiona en un solo sólido las piezas que se tocan o se superponen.
 
 ## Requisitos
 

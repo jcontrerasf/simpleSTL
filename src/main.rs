@@ -515,6 +515,7 @@ impl App {
             (report.removed_triangles, tr("triángulos eliminados", "triangles removed")),
             (report.flipped_triangles, tr("caras invertidas", "faces flipped")),
             (report.holes_filled, tr("agujeros cerrados", "holes filled")),
+            (report.merged_parts, tr("piezas fusionadas", "parts merged")),
         ] {
             if count > 0 {
                 parts.push(format!("{what}: {count}"));

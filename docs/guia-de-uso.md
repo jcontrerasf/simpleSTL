@@ -86,10 +86,16 @@ apuntando hacia adentro), aparece el botón **Reparar malla**. Aplica, en orden:
 2. quita triángulos degenerados y duplicados;
 3. orienta las caras de forma consistente;
 4. cierra agujeros;
-5. orienta cada pieza hacia afuera.
+5. orienta cada pieza hacia afuera;
+6. si la malla quedó cerrada, fusiona sus piezas sueltas en un solo sólido.
 
-El mensaje de estado resume lo que hizo. Las aristas compartidas por más de dos caras
-(geometría no-manifold real) no se pueden resolver así, y el mensaje lo indica.
+El paso 6 es para los STL exportados como un grupo de cuerpos que se tocan o se
+superponen, por ejemplo postes apoyados sobre una base o paredes que se tocan por una
+arista. Esos archivos se imprimen bien, porque el slicer une los contornos de cada
+capa, pero los cortes y las booleanas necesitan un sólido único.
+
+El mensaje de estado resume lo que hizo. Si después de reparar quedan bordes o aristas
+defectuosas, el mensaje lo indica.
 Para probarlo está `samples/cubo_roto.stl`.
 
 ## Primitivas
