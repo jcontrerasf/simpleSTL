@@ -2,6 +2,7 @@
 //! poder cambiarle el tamaño regenerando la malla.
 
 use crate::csg;
+use crate::i18n::tr;
 use crate::mesh::MeshData;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -26,10 +27,10 @@ impl Primitive {
 
     pub fn label(&self) -> &'static str {
         match self {
-            Primitive::Box { .. } => "Cubo",
-            Primitive::Sphere { .. } => "Esfera",
-            Primitive::Cylinder { .. } => "Cilindro",
-            Primitive::Cone { .. } => "Cono",
+            Primitive::Box { .. } => tr("Cubo", "Box"),
+            Primitive::Sphere { .. } => tr("Esfera", "Sphere"),
+            Primitive::Cylinder { .. } => tr("Cilindro", "Cylinder"),
+            Primitive::Cone { .. } => tr("Cono", "Cone"),
         }
     }
 

@@ -10,6 +10,8 @@ use std::path::Path;
 
 use three_d::{CpuMesh, Indices, InnerSpace, Positions, Vec3, vec3};
 
+use crate::i18n::tr;
+
 #[derive(Clone, Debug)]
 pub struct MeshData {
     pub vertices: Vec<[f32; 3]>,
@@ -34,9 +36,9 @@ impl Topology {
 impl MeshData {
     /// Carga un STL (ASCII o binario). `stl_io` ya une los vértices idénticos.
     pub fn load_stl(path: &Path) -> Result<Self, String> {
-        let file = File::open(path).map_err(|e| format!("no se pudo abrir: {e}"))?;
+        let file = File::open(path).map_err(|e| format!("{}: {e}", tr("no se pudo abrir", "could not open")))?;
         let stl = stl_io::read_stl(&mut BufReader::new(file))
-            .map_err(|e| format!("STL inválido: {e}"))?;
+            .map_err(|e| format!("{}: {e}", tr("STL inválido", "invalid STL")))?;
 
         let vertices = stl.vertices.iter().map(|v| v.0).collect();
         let triangles = stl
@@ -48,7 +50,7 @@ impl MeshData {
             .collect::<Vec<_>>();
 
         if triangles.is_empty() {
-            return Err("el archivo no contiene triángulos".into());
+            return Err(tr("el archivo no contiene triángulos", "the file contains no triangles").into());
         }
         Ok(Self { vertices, triangles })
     }
@@ -66,8 +68,8 @@ impl MeshData {
                 }
             })
             .collect();
-        let file = File::create(path).map_err(|e| format!("no se pudo crear: {e}"))?;
-        stl_io::write_stl(&mut BufWriter::new(file), triangles.iter()).map_err(|e| format!("error al escribir: {e}"))
+        let file = File::create(path).map_err(|e| format!("{}: {e}", tr("no se pudo crear", "could not create")))?;
+        stl_io::write_stl(&mut BufWriter::new(file), triangles.iter()).map_err(|e| format!("{}: {e}", tr("error al escribir", "write error")))
     }
 
     /// Copia con cada vértice transformado por `f`. `f` debe preservar la orientación

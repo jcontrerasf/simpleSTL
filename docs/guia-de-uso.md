@@ -6,12 +6,20 @@
   - arriba, los botones *Abrir STL…*, *Primitivas* y *Encuadrar*;
   - luego, la lista de objetos y la información del seleccionado;
   - debajo, las opciones de la herramienta activa;
-  - al pie, el último mensaje de estado y el espaciado de la grilla.
+  - al pie, el último mensaje de estado, el espaciado de la grilla y el selector de
+    idioma.
 - **Visor 3D**:
   - arriba a la izquierda, la barra de herramientas, que aparece al seleccionar un
     objeto;
   - arriba a la derecha, el cubo de vista;
   - la base translúcida en z = 0 marca el "suelo".
+
+### Idioma
+
+La interfaz está en español o en inglés. Al iniciar se elige según el idioma del
+sistema (las variables `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` y `LANG` en Linux): español
+si es alguna variante de español, inglés en cualquier otro caso. El selector al pie del
+panel lo cambia durante la sesión; la elección no se guarda.
 
 ## Navegar
 
@@ -55,8 +63,8 @@ Cada fila de la lista tiene:
 - **…** (o clic derecho sobre el nombre): *Renombrar*, *Clonar*, *Exportar STL…* y
   *Eliminar* (también con la tecla **Supr** sobre el objeto seleccionado).
 
-Al clonar, la copia aparece al lado del original y se llama `nombre (copia1)`,
-`nombre (copia2)`… Clonar una copia continúa la numeración en vez de acumular
+Al clonar, la copia aparece al lado del original y se llama `nombre (1)`,
+`nombre (2)`… Clonar una copia continúa la numeración en vez de acumular
 sufijos.
 
 La información del objeto seleccionado incluye:

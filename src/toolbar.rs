@@ -4,6 +4,8 @@
 use three_d::Key;
 use three_d::egui::{self, Rect};
 
+use crate::i18n::tr;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
     Move,
@@ -18,11 +20,11 @@ impl Tool {
 
     pub fn label(self) -> &'static str {
         match self {
-            Tool::Move => "Mover",
-            Tool::Rotate => "Rotar",
-            Tool::Cut => "Corte",
-            Tool::Boolean => "Booleana",
-            Tool::PlaceOnFace => "Apoyar en cara",
+            Tool::Move => tr("Mover", "Move"),
+            Tool::Rotate => tr("Rotar", "Rotate"),
+            Tool::Cut => tr("Corte", "Cut"),
+            Tool::Boolean => tr("Booleana", "Boolean"),
+            Tool::PlaceOnFace => tr("Apoyar en cara", "Place on face"),
         }
     }
 

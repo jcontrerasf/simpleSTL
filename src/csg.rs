@@ -5,6 +5,7 @@
 
 use manifold3d::{Manifold, OpType};
 
+use crate::i18n::tr;
 use crate::mesh::MeshData;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,9 +20,9 @@ impl BooleanOp {
 
     pub fn label(self) -> &'static str {
         match self {
-            BooleanOp::Union => "Unión",
-            BooleanOp::Difference => "Resta",
-            BooleanOp::Intersection => "Intersección",
+            BooleanOp::Union => tr("Unión", "Union"),
+            BooleanOp::Difference => tr("Resta", "Difference"),
+            BooleanOp::Intersection => tr("Intersección", "Intersection"),
         }
     }
 
@@ -39,7 +40,7 @@ fn to_manifold(mesh: &MeshData) -> Result<Manifold, String> {
     let vertices: Vec<f64> = mesh.vertices.iter().flatten().map(|&c| c as f64).collect();
     let triangles: Vec<u64> = mesh.triangles.iter().flatten().map(|&i| i as u64).collect();
     Manifold::from_mesh_f64(&vertices, 3, &triangles)
-        .map_err(|e| format!("Manifold rechazó la malla (¿no es cerrada?): {e}"))
+        .map_err(|e| format!("{}: {e}", tr("Manifold rechazó la malla (¿no es cerrada?)", "Manifold rejected the mesh (is it not closed?)")))
 }
 
 fn from_manifold(manifold: &Manifold) -> Option<MeshData> {
@@ -66,7 +67,7 @@ pub fn boolean(a: &MeshData, b: &MeshData, op: BooleanOp) -> Result<Option<MeshD
         BooleanOp::Intersection => OpType::Intersect,
     };
     let result = to_manifold(a)?.boolean(&to_manifold(b)?, op);
-    result.status().map_err(|e| format!("falló la operación: {e}"))?;
+    result.status().map_err(|e| format!("{}: {e}", tr("falló la operación", "the operation failed")))?;
     Ok(from_manifold(&result))
 }
 

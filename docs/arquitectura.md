@@ -18,6 +18,7 @@ primitivas).
 | `src/viewcube.rs` | Cubo de navegación dibujado con egui |
 | `src/toolbar.rs` | `Tool` y la barra superior |
 | `src/history.rs` | `History<T>`: pilas de deshacer y rehacer con límite |
+| `src/i18n.rs` | Idioma de la interfaz (español/inglés): detección y `tr(es, en)` |
 | `src/repair.rs` | Reparación de mallas: soldadura, duplicados, orientación, agujeros |
 | `src/ground.rs` | Base translúcida y grilla en z = 0 |
 

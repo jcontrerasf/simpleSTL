@@ -7,12 +7,15 @@
 use three_d::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use three_d::{Camera, InnerSpace, Vec3};
 
+use crate::i18n::tr;
+
 struct Face {
     normal: Vec3,
     /// Ejes de la cara vistos desde afuera: `right × up = normal`. Orientan la etiqueta.
     right: Vec3,
     up: Vec3,
-    label: &'static str,
+    /// Etiqueta en español y en inglés.
+    label: (&'static str, &'static str),
 }
 
 const X: Vec3 = Vec3::new(1.0, 0.0, 0.0);
@@ -24,12 +27,12 @@ const NZ: Vec3 = Vec3::new(0.0, 0.0, -1.0);
 
 // Convención de FreeCAD: la vista "Frente" mira hacia +Y (la cara frontal tiene normal -Y).
 const FACES: [Face; 6] = [
-    Face { normal: NY, right: X, up: Z, label: "Frente" },
-    Face { normal: Y, right: NX, up: Z, label: "Atrás" },
-    Face { normal: X, right: Y, up: Z, label: "Derecha" },
-    Face { normal: NX, right: NY, up: Z, label: "Izquierda" },
-    Face { normal: Z, right: X, up: Y, label: "Superior" },
-    Face { normal: NZ, right: X, up: NY, label: "Inferior" },
+    Face { normal: NY, right: X, up: Z, label: ("Frente", "Front") },
+    Face { normal: Y, right: NX, up: Z, label: ("Atrás", "Back") },
+    Face { normal: X, right: Y, up: Z, label: ("Derecha", "Right") },
+    Face { normal: NX, right: NY, up: Z, label: ("Izquierda", "Left") },
+    Face { normal: Z, right: X, up: Y, label: ("Superior", "Top") },
+    Face { normal: NZ, right: X, up: NY, label: ("Inferior", "Bottom") },
 ];
 
 /// Límites de las zonas 3×3 sobre una cara de lado 2 (de -1 a 1).
@@ -121,7 +124,7 @@ pub fn show(ctx: &egui::Context, area: Rect, camera: &Camera) -> Option<Action> 
                 let right = to_view(face.right);
                 let angle = (-right.y).atan2(right.x);
                 let galley = painter.layout_no_wrap(
-                    face.label.to_string(),
+                    tr(face.label.0, face.label.1).to_string(),
                     egui::FontId::proportional(11.0),
                     Color32::from_gray(30),
                 );
@@ -174,9 +177,9 @@ pub fn projection_button(ctx: &egui::Context, cube: Rect, orthographic: &mut boo
         .fixed_pos(cube.left_bottom() + Vec2::new(0.0, 4.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            let text = if *orthographic { "Ortogonal" } else { "Perspectiva" };
+            let text = if *orthographic { tr("Ortogonal", "Orthographic") } else { tr("Perspectiva", "Perspective") };
             let button = egui::Button::new(text).min_size(Vec2::new(cube.width(), 0.0));
-            if ui.add(button).on_hover_text("Alternar proyección (O)").clicked() {
+            if ui.add(button).on_hover_text(tr("Alternar proyección (O)", "Toggle projection (O)")).clicked() {
                 *orthographic = !*orthographic;
             }
         })

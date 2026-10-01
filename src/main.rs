@@ -5,6 +5,7 @@ mod camera;
 mod csg;
 mod ground;
 mod history;
+mod i18n;
 mod manipulator;
 mod mesh;
 mod place_on_face;
@@ -24,6 +25,7 @@ use camera::CameraController;
 use csg::BooleanOp;
 use ground::Ground;
 use history::History;
+use i18n::{Lang, tr};
 use manipulator::{GizmoSetup, Manipulator, Pose};
 use mesh::{MeshData, Topology};
 use place_on_face::{Facet, Facets};
@@ -229,7 +231,10 @@ impl App {
     /// Agrega una primitiva apoyada en z = 0, a la derecha de lo que ya hay en la escena.
     fn add_primitive(&mut self, primitive: Primitive) {
         let Some(mesh) = primitive.mesh() else {
-            self.status = format!("No se pudo generar {}", primitive.label());
+            self.status = match i18n::current() {
+                Lang::Es => format!("No se pudo generar {}", primitive.label()),
+                Lang::En => format!("Could not generate {}", primitive.label()),
+            };
             return;
         };
         let (local_min, local_max) = mesh.bounding_box();
@@ -243,7 +248,10 @@ impl App {
         let name = format!("{} {}", primitive.label(), self.primitive_count);
         let mut obj = SceneObject::from_local(&self.context, name, Arc::new(mesh), pose, self.next_color());
         obj.primitive = Some(primitive);
-        self.status = format!("Agregado {}", obj.name);
+        self.status = match i18n::current() {
+            Lang::Es => format!("Agregado {}", obj.name),
+            Lang::En => format!("Added {}", obj.name),
+        };
         self.objects.push(obj);
         self.selected = Some(self.objects.len() - 1);
     }
@@ -272,7 +280,10 @@ impl App {
         let (mesh, primitive) = (original.mesh.clone(), original.primitive);
         let mut copy = SceneObject::from_local(&self.context, name, mesh, pose, self.next_color());
         copy.primitive = primitive;
-        self.status = format!("Clonado como {}", copy.name);
+        self.status = match i18n::current() {
+            Lang::Es => format!("Clonado como {}", copy.name),
+            Lang::En => format!("Cloned as {}", copy.name),
+        };
         self.objects.push(copy);
         self.selected = Some(self.objects.len() - 1);
     }
@@ -280,11 +291,15 @@ impl App {
     fn load(&mut self, path: &Path) {
         match MeshData::load_stl(path) {
             Ok(mesh) => {
-                let name = path.file_name().map_or("sin nombre".into(), |n| n.to_string_lossy().into_owned());
-                self.status = format!("Cargado {name} ({} triángulos)", mesh.triangles.len());
+                let name = path.file_name().map_or(tr("sin nombre", "unnamed").into(), |n| n.to_string_lossy().into_owned());
+                let n = mesh.triangles.len();
+                self.status = match i18n::current() {
+                    Lang::Es => format!("Cargado {name} ({n} triángulos)"),
+                    Lang::En => format!("Loaded {name} ({n} triangles)"),
+                };
                 self.add_object(name, mesh);
             }
-            Err(e) => self.status = format!("Error en {}: {e}", path.display()),
+            Err(e) => self.status = format!("{} {}: {e}", tr("Error en", "Error in"), path.display()),
         }
     }
 
@@ -359,7 +374,10 @@ impl App {
         obj.set_pose(pose);
         pose.translation.z -= obj.world_bbox.0.z;
         obj.set_pose(pose);
-        self.status = format!("{} apoyado en una cara", obj.name);
+        self.status = match i18n::current() {
+            Lang::Es => format!("{} apoyado en una cara", obj.name),
+            Lang::En => format!("{} placed on a face", obj.name),
+        };
     }
 
     fn apply_boolean(&mut self) {
@@ -371,12 +389,16 @@ impl App {
         let start = Instant::now();
         match csg::boolean(&a.world_mesh(), &b.world_mesh(), op) {
             Ok(Some(mesh)) => {
-                self.status = format!("{} en {:.0?} ({} triángulos)", op.label(), start.elapsed(), mesh.triangles.len());
+                let (time, n) = (start.elapsed(), mesh.triangles.len());
+                self.status = match i18n::current() {
+                    Lang::Es => format!("{} en {time:.0?} ({n} triángulos)", op.label()),
+                    Lang::En => format!("{} in {time:.0?} ({n} triangles)", op.label()),
+                };
                 self.objects[self.bool_a].visible = false;
                 self.objects[self.bool_b].visible = false;
                 self.add_object(name, mesh);
             }
-            Ok(None) => self.status = format!("{}: el resultado es vacío", op.label()),
+            Ok(None) => self.status = format!("{}: {}", op.label(), tr("el resultado es vacío", "the result is empty")),
             Err(e) => self.status = e,
         }
     }
@@ -388,14 +410,14 @@ impl App {
         match csg::split(&obj.world_mesh(), plane.normal, plane.offset) {
             Ok((positive, negative)) => {
                 if positive.is_none() || negative.is_none() {
-                    self.status = "El plano no atraviesa el objeto".into();
+                    self.status = tr("El plano no atraviesa el objeto", "The plane does not cross the object").into();
                     return;
                 }
                 self.objects[plane.object].visible = false;
                 for (half, sign) in [(positive, "+"), (negative, "−")] {
                     self.add_object(format!("{base} ({sign})"), half.unwrap());
                 }
-                self.status = format!("Corte en {:.0?}", start.elapsed());
+                self.status = format!("{} {:.0?}", tr("Corte en", "Cut in"), start.elapsed());
             }
             Err(e) => self.status = e,
         }
@@ -445,9 +467,9 @@ impl App {
         match self.history.undo(self.snapshot()) {
             Some(previous) => {
                 self.restore(previous);
-                self.status = "Deshecho".into();
+                self.status = tr("Deshecho", "Undone").into();
             }
-            None => self.status = "Nada que deshacer".into(),
+            None => self.status = tr("Nada que deshacer", "Nothing to undo").into(),
         }
     }
 
@@ -455,9 +477,9 @@ impl App {
         match self.history.redo(self.snapshot()) {
             Some(next) => {
                 self.restore(next);
-                self.status = "Rehecho".into();
+                self.status = tr("Rehecho", "Redone").into();
             }
-            None => self.status = "Nada que rehacer".into(),
+            None => self.status = tr("Nada que rehacer", "Nothing to redo").into(),
         }
     }
 
@@ -482,33 +504,33 @@ impl App {
         let obj = &mut self.objects[object];
         let (fixed, report) = repair::repair(&obj.mesh);
         if !report.changed_anything() {
-            self.status = format!("{}: no se encontró nada que reparar", obj.name);
+            self.status = format!("{}: {}", obj.name, tr("no se encontró nada que reparar", "nothing to repair"));
             return;
         }
         obj.set_local_mesh(&self.context, fixed);
         obj.primitive = None;
         let mut parts = Vec::new();
         for (count, what) in [
-            (report.welded_vertices, "vértices soldados"),
-            (report.removed_triangles, "triángulos eliminados"),
-            (report.flipped_triangles, "caras invertidas"),
-            (report.holes_filled, "agujeros cerrados"),
+            (report.welded_vertices, tr("vértices soldados", "vertices welded")),
+            (report.removed_triangles, tr("triángulos eliminados", "triangles removed")),
+            (report.flipped_triangles, tr("caras invertidas", "faces flipped")),
+            (report.holes_filled, tr("agujeros cerrados", "holes filled")),
         ] {
             if count > 0 {
                 parts.push(format!("{what}: {count}"));
             }
         }
-        let topology = report.topology;
-        self.status = if topology.is_closed() {
-            format!("{} reparado: {}", obj.name, parts.join(", "))
-        } else {
-            format!(
-                "{} reparado en parte ({}); quedan {} bordes y {} aristas con más de dos caras",
-                obj.name,
-                parts.join(", "),
-                topology.boundary_edges,
-                topology.bad_edges
-            )
+        let (name, parts) = (&obj.name, parts.join(", "));
+        let (boundary, bad) = (report.topology.boundary_edges, report.topology.bad_edges);
+        self.status = match (report.topology.is_closed(), i18n::current()) {
+            (true, Lang::Es) => format!("{name} reparado: {parts}"),
+            (true, Lang::En) => format!("{name} repaired: {parts}"),
+            (false, Lang::Es) => {
+                format!("{name} reparado en parte ({parts}); quedan {boundary} bordes y {bad} aristas con más de dos caras")
+            }
+            (false, Lang::En) => {
+                format!("{name} partially repaired ({parts}); {boundary} boundary edges and {bad} edges with more than two faces remain")
+            }
         };
         self.facets = None;
     }
@@ -545,6 +567,7 @@ struct UiActions {
 }
 
 fn main() {
+    i18n::set(i18n::detect());
     let window = Window::new(WindowSettings {
         title: "simpleSTL".to_string(),
         min_size: (640, 480),
@@ -745,7 +768,7 @@ fn main() {
 
         if actions.open {
             if let Some(paths) = rfd::FileDialog::new()
-                .set_title("Abrir STL")
+                .set_title(tr("Abrir STL", "Open STL"))
                 .add_filter("STL", &["stl", "STL"])
                 .pick_files()
             {
@@ -758,7 +781,10 @@ fn main() {
         }
         if let Some(i) = actions.delete {
             let removed = app.objects.remove(i);
-            app.status = format!("Eliminado {}", removed.name);
+            app.status = match i18n::current() {
+                Lang::Es => format!("Eliminado {}", removed.name),
+                Lang::En => format!("Deleted {}", removed.name),
+            };
             // Los índices posteriores se corren en uno.
             app.selected = match app.selected {
                 Some(s) if s == i => None,
@@ -770,14 +796,14 @@ fn main() {
         if let Some(obj) = actions.export.and_then(|i| app.objects.get(i)) {
             let default_name = format!("{}.stl", obj.name.trim_end_matches(".stl"));
             if let Some(path) = rfd::FileDialog::new()
-                .set_title("Exportar STL")
+                .set_title(tr("Exportar STL", "Export STL"))
                 .add_filter("STL", &["stl"])
                 .set_file_name(default_name)
                 .save_file()
             {
                 app.status = match obj.world_mesh().save_stl(&path) {
-                    Ok(()) => format!("Exportado {}", path.display()),
-                    Err(e) => format!("Error al exportar: {e}"),
+                    Ok(()) => format!("{} {}", tr("Exportado", "Exported"), path.display()),
+                    Err(e) => format!("{}: {e}", tr("Error al exportar", "Export failed")),
                 };
             }
         }
@@ -850,9 +876,10 @@ fn main() {
     });
 }
 
-/// Separa el sufijo " (copiaN)" de un nombre: ("pieza", Some(2)) para "pieza (copia2)".
+/// Separa el sufijo de copia " (N)" de un nombre: ("pieza", Some(2)) para "pieza (2)".
+/// Es igual en todos los idiomas, para que la numeración no dependa del idioma activo.
 fn split_copy_suffix(name: &str) -> (&str, Option<u32>) {
-    if let Some((base, rest)) = name.rsplit_once(" (copia") {
+    if let Some((base, rest)) = name.rsplit_once(" (") {
         if let Some(Ok(n)) = rest.strip_suffix(')').map(str::parse::<u32>) {
             return (base, Some(n));
         }
@@ -860,7 +887,7 @@ fn split_copy_suffix(name: &str) -> (&str, Option<u32>) {
     (name, None)
 }
 
-/// Nombre para una copia de `name`: "base (copiaN)", con N uno más que la mayor copia existente
+/// Nombre para una copia de `name`: "base (N)", con N uno más que la mayor copia existente
 /// de la misma base. Copiar una copia no acumula sufijos.
 fn copy_name<'a>(name: &str, existing: impl Iterator<Item = &'a str>) -> String {
     let (base, _) = split_copy_suffix(name);
@@ -871,7 +898,7 @@ fn copy_name<'a>(name: &str, existing: impl Iterator<Item = &'a str>) -> String 
         })
         .max()
         .unwrap_or(0);
-    format!("{base} (copia{})", last + 1)
+    format!("{base} ({})", last + 1)
 }
 
 /// Qué manipula el gizmo según la herramienta activa: el objeto, el plano de corte o nada.
@@ -893,7 +920,7 @@ fn pick_facet(context: &Context, camera: &Camera, cache: &FacetCache, pixel: Phy
 
 fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     if app.objects.len() < 2 {
-        ui.weak("Se necesitan dos objetos");
+        ui.weak(tr("Se necesitan dos objetos", "Two objects are needed"));
         return;
     }
     app.bool_a = app.bool_a.min(app.objects.len() - 1);
@@ -914,20 +941,20 @@ fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     }
     ui.horizontal_wrapped(|ui| {
         for op in BooleanOp::ALL {
-            let text = if op == BooleanOp::Difference { "Resta A − B" } else { op.label() };
+            let text = if op == BooleanOp::Difference { tr("Resta A − B", "Difference A − B") } else { op.label() };
             ui.radio_value(&mut app.bool_op, op, text);
         }
     });
 
     let (a, b) = (&app.objects[app.bool_a], &app.objects[app.bool_b]);
     let problem = if app.bool_a == app.bool_b {
-        Some("A y B deben ser objetos distintos")
+        Some(tr("A y B deben ser objetos distintos", "A and B must be different objects"))
     } else if !a.topology.is_closed() || !b.topology.is_closed() {
-        Some("Ambas mallas deben ser cerradas")
+        Some(tr("Ambas mallas deben ser cerradas", "Both meshes must be closed"))
     } else {
         None
     };
-    let button = ui.add_enabled(problem.is_none(), egui::Button::new("Aplicar"));
+    let button = ui.add_enabled(problem.is_none(), egui::Button::new(tr("Aplicar", "Apply")));
     actions.boolean = button.on_disabled_hover_text(problem.unwrap_or_default()).clicked();
 }
 
@@ -936,10 +963,27 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         if !app.status.is_empty() {
             ui.label(&app.status);
         }
-        ui.weak(format!("Base z = 0 · grilla cada {}", app.grid_spacing));
-        ui.weak("Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom");
+        ui.weak(format!("{} {}", tr("Base z = 0 · grilla cada", "Base z = 0 · grid every"), app.grid_spacing));
+        ui.weak(tr(
+            "Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom",
+            "Click: select · Left: orbit · Right/Middle: pan · Wheel: zoom",
+        ));
+        language_selector(ui);
     });
     egui::ScrollArea::vertical().show(ui, |ui| panel_contents(ui, app, actions));
+}
+
+/// Selector de idioma; el cambio se ve en el siguiente cuadro.
+fn language_selector(ui: &mut egui::Ui) {
+    let mut lang = i18n::current();
+    egui::ComboBox::from_id_salt("language").selected_text(lang.name()).show_ui(ui, |ui| {
+        for option in Lang::ALL {
+            ui.selectable_value(&mut lang, option, option.name());
+        }
+    });
+    if lang != i18n::current() {
+        i18n::set(lang);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -953,16 +997,16 @@ enum ObjectAction {
 /// Menú de un objeto de la lista (botón "…" o clic derecho sobre el nombre).
 fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
     let mut action = None;
-    if ui.button("Renombrar").clicked() {
+    if ui.button(tr("Renombrar", "Rename")).clicked() {
         action = Some(ObjectAction::Rename);
     }
-    if ui.button("Clonar (Ctrl+D)").clicked() {
+    if ui.button(tr("Clonar (Ctrl+D)", "Clone (Ctrl+D)")).clicked() {
         action = Some(ObjectAction::Clone);
     }
-    if ui.button("Exportar STL…").clicked() {
+    if ui.button(tr("Exportar STL…", "Export STL…")).clicked() {
         action = Some(ObjectAction::Export);
     }
-    if ui.button("Eliminar").clicked() {
+    if ui.button(tr("Eliminar", "Delete")).clicked() {
         action = Some(ObjectAction::Delete);
     }
     if action.is_some() {
@@ -1001,14 +1045,14 @@ fn eye_toggle(ui: &mut egui::Ui, visible: &mut bool) -> egui::Response {
     } else {
         painter.line_segment([c + egui::vec2(-7.0, 6.0), c + egui::vec2(7.0, -6.0)], egui::Stroke::new(1.5_f32, color));
     }
-    response.on_hover_text(if *visible { "Ocultar" } else { "Mostrar" })
+    response.on_hover_text(if *visible { tr("Ocultar", "Hide") } else { tr("Mostrar", "Show") })
 }
 
 fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     ui.heading("simpleSTL");
     ui.horizontal(|ui| {
-        actions.open = ui.button("Abrir STL…").clicked();
-        ui.menu_button("Primitivas", |ui| {
+        actions.open = ui.button(tr("Abrir STL…", "Open STL…")).clicked();
+        ui.menu_button(tr("Primitivas", "Primitives"), |ui| {
             for primitive in Primitive::DEFAULTS {
                 if ui.button(primitive.label()).clicked() {
                     actions.add_primitive = Some(primitive);
@@ -1016,13 +1060,13 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 }
             }
         });
-        actions.fit = ui.button("Encuadrar").clicked();
+        actions.fit = ui.button(tr("Encuadrar", "Fit view")).clicked();
     });
     ui.separator();
 
-    ui.label(egui::RichText::new("Objetos").strong());
+    ui.label(egui::RichText::new(tr("Objetos", "Objects")).strong());
     if app.objects.is_empty() {
-        ui.weak("Ninguno cargado");
+        ui.weak(tr("Ninguno cargado", "None loaded"));
     }
     for (i, obj) in app.objects.iter_mut().enumerate() {
         ui.horizontal(|ui| {
@@ -1088,37 +1132,44 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         // Cerrada pero con volumen negativo: las caras apuntan hacia adentro.
         let inverted = closed && volume < 0.0;
         egui::Grid::new("info").num_columns(2).show(ui, |ui| {
-            ui.label("Triángulos");
+            ui.label(tr("Triángulos", "Triangles"));
             ui.label(obj.mesh.triangles.len().to_string());
             ui.end_row();
-            ui.label("Vértices");
+            ui.label(tr("Vértices", "Vertices"));
             ui.label(obj.mesh.vertices.len().to_string());
             ui.end_row();
-            ui.label("Tamaño");
+            ui.label(tr("Tamaño", "Size"));
             ui.label(format!("{:.2} × {:.2} × {:.2}", size.x, size.y, size.z));
             ui.end_row();
-            ui.label("Cerrada");
+            ui.label(tr("Cerrada", "Closed"));
             if !closed {
                 ui.colored_label(
                     egui::Color32::LIGHT_RED,
-                    format!("no ({} bordes, {} defectuosas)", obj.topology.boundary_edges, obj.topology.bad_edges),
+                    {
+                        let (boundary, bad) = (obj.topology.boundary_edges, obj.topology.bad_edges);
+                        match i18n::current() {
+                            Lang::Es => format!("no ({boundary} bordes, {bad} defectuosas)"),
+                            Lang::En => format!("no ({boundary} boundary, {bad} defective)"),
+                        }
+                    },
                 );
             } else if inverted {
-                ui.colored_label(egui::Color32::LIGHT_RED, "sí, con normales invertidas");
+                ui.colored_label(egui::Color32::LIGHT_RED, tr("sí, con normales invertidas", "yes, with inverted normals"));
             } else {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, "sí");
+                ui.colored_label(egui::Color32::LIGHT_GREEN, tr("sí", "yes"));
             }
             ui.end_row();
             if closed {
-                ui.label("Volumen");
+                ui.label(tr("Volumen", "Volume"));
                 ui.label(format!("{:.2}", volume.abs()));
                 ui.end_row();
             }
         });
         if !closed || inverted {
-            let button = ui.button("Reparar malla").on_hover_text(
+            let button = ui.button(tr("Reparar malla", "Repair mesh")).on_hover_text(tr(
                 "Suelda vértices, quita triángulos duplicados, orienta las caras y cierra agujeros",
-            );
+                "Welds vertices, removes duplicate triangles, orients faces and fills holes",
+            ));
             if button.clicked() {
                 actions.repair = app.selected;
             }
@@ -1145,34 +1196,35 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
         changed |= ui.add(drag).changed();
         ui.end_row();
     };
-    ui.label(egui::RichText::new("Dimensiones").strong());
+    ui.label(egui::RichText::new(tr("Dimensiones", "Dimensions")).strong());
     let mut segments_changed = false;
     egui::Grid::new("dimensions").num_columns(2).show(ui, |ui| match &mut primitive {
         Primitive::Box { size } => {
-            for (name, value) in ["Ancho (X)", "Fondo (Y)", "Alto (Z)"].into_iter().zip(size.iter_mut()) {
+            let names = [tr("Ancho (X)", "Width (X)"), tr("Fondo (Y)", "Depth (Y)"), tr("Alto (Z)", "Height (Z)")];
+            for (name, value) in names.into_iter().zip(size.iter_mut()) {
                 length(ui, name, value);
             }
         }
         Primitive::Sphere { radius, segments } => {
-            length(ui, "Radio", radius);
-            ui.label("Segmentos");
+            length(ui, tr("Radio", "Radius"), radius);
+            ui.label(tr("Segmentos", "Segments"));
             segments_changed = ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
         }
         Primitive::Cylinder { radius, height, segments } => {
-            length(ui, "Radio", radius);
-            length(ui, "Alto", height);
-            ui.label("Segmentos");
+            length(ui, tr("Radio", "Radius"), radius);
+            length(ui, tr("Alto", "Height"), height);
+            ui.label(tr("Segmentos", "Segments"));
             segments_changed = ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
         }
         Primitive::Cone { radius_bottom, radius_top, height, segments } => {
-            length(ui, "Radio inferior", radius_bottom);
+            length(ui, tr("Radio inferior", "Bottom radius"), radius_bottom);
             // El superior puede ser 0 (punta); el inferior no, o el sólido sería vacío.
-            ui.label("Radio superior");
+            ui.label(tr("Radio superior", "Top radius"));
             let drag = egui::DragValue::new(radius_top).range(0.0..=f32::MAX).speed(0.1).max_decimals(2);
             segments_changed |= ui.add(drag).changed();
             ui.end_row();
-            length(ui, "Alto", height);
-            ui.label("Segmentos");
+            length(ui, tr("Alto", "Height"), height);
+            ui.label(tr("Segmentos", "Segments"));
             segments_changed |= ui.add(egui::DragValue::new(segments).range(primitives::SEGMENTS)).changed();
         }
     });
@@ -1183,7 +1235,10 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
 fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     let Some(i) = app.selected else { return };
     let Some(tool) = app.tool else {
-        ui.weak("Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F). Esc cierra la activa.");
+        ui.weak(tr(
+            "Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F). Esc cierra la activa.",
+            "Tools in the top bar: Move (M), Rotate (R), Cut (C), Boolean (B), Place on face (F). Esc closes the active one.",
+        ));
         return;
     };
     ui.label(egui::RichText::new(tool.label()).strong());
@@ -1193,7 +1248,7 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             let mut pose = pose;
             let mut changed = false;
             ui.horizontal(|ui| {
-                ui.label("Posición");
+                ui.label(tr("Posición", "Position"));
                 for c in [&mut pose.translation.x, &mut pose.translation.y, &mut pose.translation.z] {
                     changed |= ui.add(egui::DragValue::new(c).speed(0.1).max_decimals(2)).changed();
                 }
@@ -1201,23 +1256,31 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             if changed {
                 actions.pose = Some((i, pose));
             }
-            ui.weak("Arrastra las flechas. Ctrl: pasos de 1.");
+            ui.weak(tr("Arrastra las flechas. Ctrl: pasos de 1.", "Drag the arrows. Ctrl: steps of 1."));
         }
         Tool::Rotate => {
-            if ui.button("Restablecer rotación").clicked() {
+            if ui.button(tr("Restablecer rotación", "Reset rotation")).clicked() {
                 actions.pose = Some((i, Pose::at(pose.translation)));
             }
-            ui.weak("Arrastra los anillos. Ctrl: pasos de 15°.");
+            ui.weak(tr("Arrastra los anillos. Ctrl: pasos de 15°.", "Drag the rings. Ctrl: steps of 15°."));
         }
         Tool::Cut => cut_section(ui, app, actions, i),
         Tool::Boolean => boolean_panel(ui, app, actions),
         Tool::PlaceOnFace => {
-            ui.checkbox(&mut app.align_on_place, "Alinear con los ejes X/Y")
-                .on_hover_text("Tras apoyar, gira sobre Z para que las caras verticales miren a ±X o ±Y");
+            ui.checkbox(&mut app.align_on_place, tr("Alinear con los ejes X/Y", "Align with the X/Y axes")).on_hover_text(tr(
+                "Tras apoyar, gira sobre Z para que las caras verticales miren a ±X o ±Y",
+                "After placing, rotates about Z so the vertical faces point to ±X or ±Y",
+            ));
             match app.facets.as_ref().map(|c| c.facets.candidates.len()) {
-                Some(0) => ui.weak("No hay caras planas estables (p. ej. superficies curvas)."),
-                Some(n) => ui.label(format!("{n} caras disponibles: haz clic en una para apoyar el objeto sobre ella.")),
-                None => ui.weak("Calculando…"),
+                Some(0) => ui.weak(tr(
+                    "No hay caras planas estables (p. ej. superficies curvas).",
+                    "No stable flat faces (e.g. curved surfaces).",
+                )),
+                Some(n) => ui.label(match i18n::current() {
+                    Lang::Es => format!("{n} caras disponibles: haz clic en una para apoyar el objeto sobre ella."),
+                    Lang::En => format!("{n} faces available: click one to place the object on it."),
+                }),
+                None => ui.weak(tr("Calculando…", "Computing…")),
             };
         }
     }
@@ -1229,9 +1292,9 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
     let (min, max) = obj.world_bbox;
 
     ui.horizontal(|ui| {
-        ui.label("Orientar");
+        ui.label(tr("Orientar", "Orient"));
         for (k, name) in AXES.iter().enumerate() {
-            if ui.button(*name).on_hover_text(format!("Normal según {name}")).clicked() {
+            if ui.button(*name).on_hover_text(format!("{} {name}", tr("Normal según", "Normal along"))).clicked() {
                 // Rotación que lleva la normal base (+Z) al eje elegido.
                 app.cut_pose.rotation = match k {
                     0 => Quat::from_angle_y(degrees(90.0)),
@@ -1250,15 +1313,18 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
     let current = n.dot(app.cut_pose.translation);
     let mut offset = current;
     ui.horizontal(|ui| {
-        ui.label("Desplazamiento");
+        ui.label(tr("Desplazamiento", "Offset"));
         let drag = egui::DragValue::new(&mut offset).range(lo..=hi).speed((hi - lo) * 0.005).max_decimals(2);
         if ui.add(drag).changed() {
             app.cut_pose.translation += n * (offset - current);
         }
     });
-    ui.weak("Arrastra la flecha para desplazar el plano y los anillos para inclinarlo.");
-    let button = ui.add_enabled(closed, egui::Button::new("Cortar"));
-    actions.cut = button.on_disabled_hover_text("La malla debe ser cerrada").clicked();
+    ui.weak(tr(
+        "Arrastra la flecha para desplazar el plano y los anillos para inclinarlo.",
+        "Drag the arrow to move the plane and the rings to tilt it.",
+    ));
+    let button = ui.add_enabled(closed, egui::Button::new(tr("Cortar", "Cut")));
+    actions.cut = button.on_disabled_hover_text(tr("La malla debe ser cerrada", "The mesh must be closed")).clicked();
 }
 
 #[cfg(test)]
@@ -1267,12 +1333,13 @@ mod tests {
 
     #[test]
     fn copies_are_numbered_without_nesting() {
-        assert_eq!(copy_name("pieza", ["pieza"].into_iter()), "pieza (copia1)");
-        let names = ["pieza", "pieza (copia1)", "pieza (copia2)"];
+        assert_eq!(copy_name("pieza", ["pieza"].into_iter()), "pieza (1)");
+        let names = ["pieza", "pieza (1)", "pieza (2)"];
         // Copiar el original o cualquier copia da el siguiente número.
-        assert_eq!(copy_name("pieza", names.into_iter()), "pieza (copia3)");
-        assert_eq!(copy_name("pieza (copia1)", names.into_iter()), "pieza (copia3)");
-        // Paréntesis que no son de copia se conservan.
-        assert_eq!(copy_name("tapa (v2)", ["tapa (v2)"].into_iter()), "tapa (v2) (copia1)");
+        assert_eq!(copy_name("pieza", names.into_iter()), "pieza (3)");
+        assert_eq!(copy_name("pieza (1)", names.into_iter()), "pieza (3)");
+        // Paréntesis que no son de copia se conservan (también las mitades de un corte).
+        assert_eq!(copy_name("tapa (v2)", ["tapa (v2)"].into_iter()), "tapa (v2) (1)");
+        assert_eq!(copy_name("pieza (+)", ["pieza (+)"].into_iter()), "pieza (+) (1)");
     }
 }
