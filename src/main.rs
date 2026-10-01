@@ -7,13 +7,16 @@ mod ground;
 mod history;
 mod i18n;
 mod manipulator;
+mod measure;
 mod mesh;
 mod place_on_face;
 mod primitives;
 mod repair;
+mod snap;
 mod toolbar;
 mod viewcube;
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,9 +30,11 @@ use ground::Ground;
 use history::History;
 use i18n::{Lang, tr};
 use manipulator::{GizmoSetup, Manipulator, Pose};
+use measure::{Axis, Measurement, Ruler};
 use mesh::{MeshData, Topology};
 use place_on_face::{Facet, Facets};
 use primitives::Primitive;
+use snap::{Features, Snap};
 use toolbar::Tool;
 
 const PALETTE: [[u8; 3]; 6] = [
@@ -55,6 +60,9 @@ struct SceneObject {
     visible: bool,
     /// Parámetros si es una primitiva; permiten cambiarle el tamaño.
     primitive: Option<Primitive>,
+    /// Rasgos para el snap (esquinas, aristas, centros), en coordenadas locales. Se
+    /// calculan la primera vez que se necesitan.
+    features: OnceCell<Features>,
 }
 
 impl SceneObject {
@@ -87,9 +95,14 @@ impl SceneObject {
             color,
             visible: true,
             primitive: None,
+            features: OnceCell::new(),
         };
         obj.set_pose(pose);
         obj
+    }
+
+    fn features(&self) -> &Features {
+        self.features.get_or_init(|| snap::features(&self.mesh))
     }
 
     /// Reemplaza la malla local (p. ej. al cambiar el tamaño de una primitiva) sin mover la pose.
@@ -97,6 +110,7 @@ impl SceneObject {
         self.model.geometry = Mesh::new(context, &mesh.to_cpu_mesh());
         self.topology = mesh.topology();
         self.mesh = Arc::new(mesh);
+        self.features = OnceCell::new();
         self.set_pose(self.pose);
     }
 
@@ -146,6 +160,25 @@ struct App {
     /// El campo de renombrar debe tomar el foco en el próximo cuadro (solo al abrirse:
     /// pedirlo siempre impediría que Enter lo suelte y confirme).
     rename_needs_focus: bool,
+    /// Medición de la herramienta Medir (una sola; se borra al salir de la herramienta).
+    measurement: Measurement,
+    /// Eje fijado para medir y poner reglas; `None` usa el dominante.
+    axis_lock: Option<Axis>,
+    /// Reglas en la escena (no entran en el historial).
+    rulers: Vec<Ruler>,
+    /// Primer punto de la regla que se está poniendo.
+    ruler_start: Option<Vec3>,
+    /// Espaciado de las marcas de las reglas nuevas.
+    ruler_spacing: f32,
+    /// Punto con snap bajo el cursor (con Medir o Regla activas).
+    hover_snap: Option<Snap>,
+    /// Pose del objeto al empezar el arrastre con Mover, y la pose "cruda" que entrega el
+    /// gizmo (sin enganchar a las reglas). El gizmo aplica incrementos a la pose que recibe,
+    /// así que debe seguir recibiendo la cruda o el objeto se desfasaría del cursor.
+    drag_start: Option<Pose>,
+    drag_raw: Option<Pose>,
+    /// Marcas de regla a las que está enganchado el objeto que se arrastra.
+    snapped_marks: Vec<Vec3>,
 }
 
 /// Lo que el historial guarda de cada objeto. La malla se comparte (`Arc`), así que una
@@ -323,8 +356,20 @@ impl App {
 
     /// Ajustes al cambiar de herramienta o de objeto seleccionado.
     fn on_tool_or_selection_changed(&mut self) {
+        // La medición y la regla a medio poner no sobreviven a un cambio de herramienta.
+        if self.tool != Some(Tool::Measure) {
+            self.measurement = Measurement::default();
+        }
+        if self.tool != Some(Tool::Ruler) {
+            self.ruler_start = None;
+        }
+        if !matches!(self.tool, Some(Tool::Measure | Tool::Ruler)) {
+            self.hover_snap = None;
+        }
         let Some(selected) = self.selected else {
-            self.tool = None;
+            if self.tool.is_some_and(Tool::needs_object) {
+                self.tool = None;
+            }
             self.facets = None;
             return;
         };
@@ -341,6 +386,74 @@ impl App {
             _ => {}
         }
         self.facets = None;
+    }
+
+    /// Clic con Medir o Regla en un punto (ya con snap).
+    fn measure_click(&mut self, p: Vec3) {
+        match self.tool {
+            Some(Tool::Measure) => self.measurement.click(p),
+            Some(Tool::Ruler) => match self.ruler_start.take() {
+                None => self.ruler_start = Some(p),
+                Some(start) => {
+                    let axis = measure::axis_between(start, p, self.axis_lock);
+                    match Ruler::between(start, p, axis, self.ruler_spacing) {
+                        Some(ruler) => self.rulers.push(ruler),
+                        // Segundo clic sin separarse en el eje: se vuelve a empezar desde ahí.
+                        None => self.ruler_start = Some(p),
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// Esc: descarta el punto pendiente de Medir o Regla; si no lo hay, cierra la herramienta.
+    fn escape(&mut self) {
+        if self.ruler_start.take().is_some() {
+            return;
+        }
+        if self.tool == Some(Tool::Measure) && self.measurement.a.is_some() && self.measurement.b.is_none() {
+            self.measurement = Measurement::default();
+            return;
+        }
+        self.tool = None;
+    }
+
+    /// Aplica la pose que entrega el gizmo al arrastrar con Mover, enganchando el objeto a
+    /// las marcas de las reglas en los ejes en que se está moviendo. `tolerance` es la
+    /// distancia de enganche en unidades del mundo.
+    fn drag_to(&mut self, object: usize, raw: Pose, tolerance: f32) {
+        let start = *self.drag_start.get_or_insert(self.objects[object].pose);
+        self.drag_raw = Some(raw);
+        self.objects[object].set_pose(raw);
+        self.snapped_marks.clear();
+        if self.rulers.is_empty() {
+            return;
+        }
+        let moved = raw.translation - start.translation;
+        let axes: Vec<Axis> = Axis::ALL.into_iter().filter(|a| moved.dot(a.unit()).abs() > 1e-6).collect();
+        let obj = &self.objects[object];
+        let (min, max) = obj.world_bbox;
+        let features = obj.features();
+        let mut points = vec![min, (min + max) * 0.5, max];
+        points.extend(features.corners.iter().chain(&features.centers).map(|&p| raw.apply(p)));
+        let snap = measure::ruler_snap(&self.rulers, &points, tolerance, &axes);
+        if !snap.marks.is_empty() {
+            let mut pose = raw;
+            pose.translation += snap.offset;
+            self.objects[object].set_pose(pose);
+            self.snapped_marks = snap.marks;
+        }
+    }
+
+    /// Punto con snap bajo el píxel dado: rasgos de los objetos visibles, la superficie bajo
+    /// el cursor o el suelo.
+    fn snap_at(&self, context: &Context, camera: &Camera, pixel: PhysicalPoint) -> Option<Snap> {
+        let visible: Vec<&SceneObject> = self.objects.iter().filter(|o| o.visible).collect();
+        let geometries = visible.iter().map(|o| &o.model.geometry);
+        let surface = pick(context, camera, pixel, geometries, Cull::None).ok().flatten().map(|h| h.position);
+        let targets: Vec<(&Features, Pose)> = visible.iter().map(|o| (o.features(), o.pose)).collect();
+        snap::find_snap(camera, pixel, &targets, surface)
     }
 
     /// Recalcula las caras de "Apoyar en cara" si la herramienta está activa y el objeto
@@ -613,6 +726,15 @@ fn main() {
         grid_spacing: ground.spacing,
         renaming: None,
         rename_needs_focus: false,
+        measurement: Measurement::default(),
+        axis_lock: None,
+        rulers: Vec::new(),
+        ruler_start: None,
+        ruler_spacing: 10.0,
+        hover_snap: None,
+        drag_start: None,
+        drag_raw: None,
+        snapped_marks: Vec::new(),
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -672,11 +794,11 @@ fn main() {
                 cube_action = viewcube::show(ui.ctx(), cube_rect, &camera);
                 blocked.push(cube_rect);
                 blocked.push(viewcube::projection_button(ui.ctx(), cube_rect, &mut orthographic));
-                if app.selected.is_some() {
-                    // La barra usa el ancho libre a la izquierda del cubo de vista.
-                    let max_width = (cube_rect.min.x - view_rect.min.x - 32.0).max(120.0);
-                    blocked.push(toolbar::show(ui.ctx(), view_rect, max_width, &mut app.tool));
-                }
+                // La barra usa el ancho libre a la izquierda del cubo de vista.
+                let max_width = (cube_rect.min.x - view_rect.min.x - 32.0).max(120.0);
+                let has_selection = app.selected.is_some();
+                blocked.push(toolbar::show(ui.ctx(), view_rect, max_width, has_selection, &mut app.tool));
+                draw_overlays(ui.ctx(), &camera, view_rect, dpr, window_viewport.height, &app);
                 dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, &blocked, gizmo_target(&app));
             },
         );
@@ -687,10 +809,14 @@ fn main() {
             extra_frames = extra_frames.max(2);
         }
         if let (Some(pose), Some(i)) = (dragged_pose, app.selected) {
-            if app.tool == Some(Tool::Cut) {
-                app.cut_pose = pose;
-            } else {
-                app.objects[i].set_pose(pose);
+            match app.tool {
+                Some(Tool::Cut) => app.cut_pose = pose,
+                Some(Tool::Move) => {
+                    // Enganche a las reglas: 10 puntos de pantalla, en unidades del mundo.
+                    let tolerance = 10.0 * dpr * world_per_pixel(&camera, pose.translation);
+                    app.drag_to(i, pose, tolerance);
+                }
+                _ => app.objects[i].set_pose(pose),
             }
         }
         if orthographic != control.is_orthographic() {
@@ -698,6 +824,7 @@ fn main() {
         }
         // Atajos de teclado (egui ya marcó como manejadas las teclas si hay un campo de texto activo).
         let has_selection = app.selected.is_some();
+        let measuring = matches!(app.tool, Some(Tool::Measure | Tool::Ruler));
         for event in frame_input.events.iter_mut() {
             let Event::KeyPress { kind, modifiers, handled } = event else { continue };
             if *handled || modifiers.alt {
@@ -710,11 +837,22 @@ fn main() {
                 (Key::Y, true) => app.redo(),
                 (Key::D, true) if has_selection => actions.clone = app.selected,
                 (Key::O, false) => control.set_orthographic(&mut camera, !control.is_orthographic()),
-                (Key::Escape, false) if has_selection => app.tool = None,
+                (Key::Escape, false) if app.tool.is_some() => app.escape(),
                 (Key::Delete, false) if has_selection => actions.delete = app.selected,
-                (key, false) if has_selection => match Tool::ALL.into_iter().find(|t| t.key() == key) {
-                    Some(tool) => app.tool = if app.tool == Some(tool) { None } else { Some(tool) },
-                    None => *handled = false,
+                // Con Medir o Regla, X/Y/Z fijan el eje (o lo liberan si ya estaba fijado).
+                (key @ (Key::X | Key::Y | Key::Z), false) if measuring => {
+                    let axis = match key {
+                        Key::X => Axis::X,
+                        Key::Y => Axis::Y,
+                        _ => Axis::Z,
+                    };
+                    app.axis_lock = if app.axis_lock == Some(axis) { None } else { Some(axis) };
+                }
+                (key, false) => match Tool::ALL.into_iter().find(|t| t.key() == key) {
+                    Some(tool) if has_selection || !tool.needs_object() => {
+                        app.tool = if app.tool == Some(tool) { None } else { Some(tool) };
+                    }
+                    _ => *handled = false,
                 },
                 _ => *handled = false,
             }
@@ -749,9 +887,20 @@ fn main() {
             }
         }
 
+        // Punto con snap bajo el cursor, para Medir y Regla.
+        if measuring {
+            if let Some(p) = last_motion {
+                app.hover_snap = if in_scene(p) { app.snap_at(&context, &camera, p) } else { None };
+            }
+        }
+
         if let Some(click) = manipulator.consume_events(&mut frame_input.events) {
             let p = click.position;
-            if in_scene(p) {
+            if in_scene(p) && measuring {
+                if let Some(snap) = app.snap_at(&context, &camera, p) {
+                    app.measure_click(snap.position);
+                }
+            } else if in_scene(p) {
                 // Con "Apoyar en cara", un clic sobre una cara resaltada tiene prioridad.
                 let facet = app.facets.as_ref().and_then(|c| pick_facet(&context, &camera, c, p));
                 if let Some(facet) = facet {
@@ -852,6 +1001,9 @@ fn main() {
         // Confirmar cambios en el historial cuando no hay un arrastre en curso.
         if !gui.context().input(|i| i.pointer.any_down()) {
             app.commit_changes();
+            app.drag_start = None;
+            app.drag_raw = None;
+            app.snapped_marks.clear();
         }
 
         let mut scene: Vec<&dyn Object> = app.objects.iter().filter(|o| o.visible).map(|o| &o.model as &dyn Object).collect();
@@ -906,10 +1058,60 @@ fn copy_name<'a>(name: &str, existing: impl Iterator<Item = &'a str>) -> String 
 fn gizmo_target(app: &App) -> Option<(Pose, GizmoSetup)> {
     let obj = app.selected.and_then(|i| app.objects.get(i)).filter(|o| o.visible)?;
     match app.tool? {
-        Tool::Move => Some((obj.pose, GizmoSetup::translate())),
+        Tool::Move => Some((app.drag_raw.unwrap_or(obj.pose), GizmoSetup::translate())),
         Tool::Rotate => Some((obj.pose, GizmoSetup::rotate())),
         Tool::Cut => Some((app.cut_pose, GizmoSetup::cut_plane())),
-        Tool::Boolean | Tool::PlaceOnFace => None,
+        Tool::Boolean | Tool::PlaceOnFace | Tool::Measure | Tool::Ruler => None,
+    }
+}
+
+/// Unidades del mundo por píxel físico cerca de `p`.
+fn world_per_pixel(camera: &Camera, p: Vec3) -> f32 {
+    let (a, b) = (camera.pixel_at_position(p), camera.pixel_at_position(p + camera.right_direction()));
+    1.0 / vec2(b.x - a.x, b.y - a.y).magnitude().max(1e-6)
+}
+
+/// Reglas, la medición en curso y el marcador de snap, dibujados sobre el visor.
+fn draw_overlays(ctx: &egui::Context, camera: &Camera, view: egui::Rect, dpr: f32, window_height: u32, app: &App) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("overlays"))).with_clip_rect(view);
+    let project = |p: Vec3| {
+        if (p - camera.position()).dot(camera.view_direction()) <= camera.z_near() {
+            return None; // detrás de la cámara
+        }
+        let px = camera.pixel_at_position(p);
+        Some(egui::pos2(px.x / dpr, (window_height as f32 - px.y) / dpr))
+    };
+    for ruler in &app.rulers {
+        measure::draw_ruler(&painter, &project, ruler, &app.snapped_marks);
+    }
+    let hover = app.hover_snap.map(|s| s.position);
+    match app.tool {
+        Some(Tool::Measure) => {
+            if let Some(a) = app.measurement.a {
+                if let Some(b) = app.measurement.b.or(hover) {
+                    measure::draw_measurement(&painter, &project, a, b, measure::axis_between(a, b, app.axis_lock));
+                }
+            }
+        }
+        Some(Tool::Ruler) => {
+            if let (Some(start), Some(end)) = (app.ruler_start, hover) {
+                let axis = measure::axis_between(start, end, app.axis_lock);
+                if let Some(preview) = Ruler::between(start, end, axis, app.ruler_spacing) {
+                    measure::draw_ruler(&painter, &project, &preview, &[]);
+                }
+            }
+        }
+        _ => return,
+    }
+    for point in [app.measurement.a, app.ruler_start].into_iter().flatten() {
+        if let Some(p) = project(point) {
+            painter.circle_filled(p, 4.0, egui::Color32::WHITE);
+        }
+    }
+    if let Some(snap) = app.hover_snap {
+        if let Some(p) = project(snap.position) {
+            measure::draw_snap(&painter, p, snap.kind);
+        }
     }
 }
 
@@ -1182,7 +1384,7 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         }
     }
 
-    if app.selected.is_some() {
+    if app.selected.is_some() || app.tool.is_some() {
         ui.separator();
         tool_section(ui, app, actions);
     }
@@ -1254,15 +1456,20 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
 
 /// Opciones de la herramienta activa (solo esa) para el objeto seleccionado.
 fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
-    let Some(i) = app.selected else { return };
     let Some(tool) = app.tool else {
         ui.weak(tr(
-            "Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F). Esc cierra la activa.",
-            "Tools in the top bar: Move (M), Rotate (R), Cut (C), Boolean (B), Place on face (F). Esc closes the active one.",
+            "Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F), Medir (L), Regla (G). Esc cierra la activa.",
+            "Tools in the top bar: Move (M), Rotate (R), Cut (C), Boolean (B), Place on face (F), Measure (L), Ruler (G). Esc closes the active one.",
         ));
         return;
     };
     ui.label(egui::RichText::new(tool.label()).strong());
+    match tool {
+        Tool::Measure => return measure_section(ui, app),
+        Tool::Ruler => return ruler_section(ui, app),
+        _ => {}
+    }
+    let Some(i) = app.selected else { return };
     let pose = app.objects[i].pose;
     match tool {
         Tool::Move => {
@@ -1278,6 +1485,12 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 actions.pose = Some((i, pose));
             }
             ui.weak(tr("Arrastra las flechas. Ctrl: pasos de 1.", "Drag the arrows. Ctrl: steps of 1."));
+            if !app.rulers.is_empty() {
+                ui.weak(tr(
+                    "Al arrastrar, los bordes, el centro, las esquinas y los centros de agujeros se enganchan a las marcas de las reglas.",
+                    "While dragging, the edges, center, corners and hole centers snap to the ruler marks.",
+                ));
+            }
         }
         Tool::Rotate => {
             if ui.button(tr("Restablecer rotación", "Reset rotation")).clicked() {
@@ -1287,6 +1500,7 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         }
         Tool::Cut => cut_section(ui, app, actions, i),
         Tool::Boolean => boolean_panel(ui, app, actions),
+        Tool::Measure | Tool::Ruler => {}
         Tool::PlaceOnFace => {
             ui.checkbox(&mut app.align_on_place, tr("Alinear con los ejes X/Y", "Align with the X/Y axes")).on_hover_text(tr(
                 "Tras apoyar, gira sobre Z para que las caras verticales miren a ±X o ±Y",
@@ -1304,6 +1518,69 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 None => ui.weak(tr("Calculando…", "Computing…")),
             };
         }
+    }
+}
+
+/// Eje de Medir y Regla: automático (el dominante) o fijado.
+fn axis_selector(ui: &mut egui::Ui, lock: &mut Option<Axis>) {
+    ui.horizontal(|ui| {
+        ui.label(tr("Eje", "Axis"));
+        ui.selectable_value(lock, None, tr("Auto", "Auto"));
+        for axis in Axis::ALL {
+            ui.selectable_value(lock, Some(axis), egui::RichText::new(axis.name()).color(axis.color()));
+        }
+    });
+}
+
+fn measure_section(ui: &mut egui::Ui, app: &mut App) {
+    ui.weak(tr(
+        "Haz clic en dos puntos. El cursor se engancha a centros de agujeros, esquinas y aristas. X/Y/Z fijan el eje.",
+        "Click two points. The cursor snaps to hole centers, corners and edges. X/Y/Z lock the axis.",
+    ));
+    axis_selector(ui, &mut app.axis_lock);
+    let hover = app.hover_snap.map(|s| s.position);
+    match (app.measurement.a, app.measurement.b.or(hover)) {
+        (Some(a), Some(b)) => {
+            let axis = measure::axis_between(a, b, app.axis_lock);
+            let value = (b - a).dot(axis.unit()).abs();
+            ui.label(egui::RichText::new(format!("{value:.2}  ({})", axis.name())).size(18.0).color(axis.color()));
+            let d = b - a;
+            ui.weak(format!("ΔX {:.2} · ΔY {:.2} · ΔZ {:.2}", d.x, d.y, d.z));
+        }
+        (Some(_), None) => {
+            ui.weak(tr("Haz clic en el segundo punto.", "Click the second point."));
+        }
+        _ => {
+            ui.weak(tr("Haz clic en el primer punto.", "Click the first point."));
+        }
+    }
+}
+
+fn ruler_section(ui: &mut egui::Ui, app: &mut App) {
+    ui.weak(tr(
+        "Haz clic donde empieza y luego hacia dónde se extiende. Al mover un objeto, se engancha a las marcas.",
+        "Click where it starts, then where it extends to. Moving objects snap to its marks.",
+    ));
+    axis_selector(ui, &mut app.axis_lock);
+    ui.horizontal(|ui| {
+        ui.label(tr("Marcas cada", "Marks every"));
+        ui.add(egui::DragValue::new(&mut app.ruler_spacing).range(measure::MIN_SPACING..=f32::MAX).speed(0.1).max_decimals(2));
+    });
+    let mut remove = None;
+    for (k, ruler) in app.rulers.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(ruler.axis.name()).strong().color(ruler.axis.color()));
+            ui.add(egui::DragValue::new(&mut ruler.length).range(measure::MIN_SPACING..=f32::MAX).speed(0.1).max_decimals(2))
+                .on_hover_text(tr("Largo", "Length"));
+            ui.label(tr("cada", "every"));
+            ui.add(egui::DragValue::new(&mut ruler.spacing).range(measure::MIN_SPACING..=f32::MAX).speed(0.1).max_decimals(2));
+            if ui.button(tr("Quitar", "Remove")).clicked() {
+                remove = Some(k);
+            }
+        });
+    }
+    if let Some(k) = remove {
+        app.rulers.remove(k);
     }
 }
 

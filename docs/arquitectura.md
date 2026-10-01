@@ -17,6 +17,8 @@ primitivas).
 | `src/camera.rs` | Cámara tornamesa (azimut y elevación), desplazamiento, zoom, encuadre y transiciones animadas |
 | `src/viewcube.rs` | Cubo de navegación dibujado con egui |
 | `src/toolbar.rs` | `Tool` y la barra superior |
+| `src/snap.rs` | Rasgos de una malla (aristas vivas, esquinas, centros de arcos) y snap del cursor |
+| `src/measure.rs` | Ejes, medición, reglas, enganche a sus marcas y su dibujo sobre el visor |
 | `src/history.rs` | `History<T>`: pilas de deshacer y rehacer con límite |
 | `src/i18n.rs` | Idioma de la interfaz (español/inglés): detección y `tr(es, en)` |
 | `src/repair.rs` | Reparación de mallas: soldadura, duplicados, orientación, agujeros, fusión de piezas |
@@ -173,6 +175,32 @@ lo que queda entre la cámara y el objetivo.
    sólido válido aunque juntas se intersequen; unir la malla completa consigo misma,
    en cambio, deja un resultado erróneo. Si Manifold rechaza la malla, este paso se
    omite.
+
+### Snap, medición y reglas
+
+`snap::features` trabaja sobre la malla local y se guarda en `SceneObject::features`
+(un `OnceCell`, que se reinicia en `set_local_mesh`):
+
+- **Aristas vivas:** las de borde y las de diedro > 30°.
+- **Esquinas:** los vértices de aristas vivas con grado ≠ 2, o donde la dirección gira
+  > 30°.
+- **Centros:** el grafo de aristas vivas se recorre en cadenas (de esquina a esquina) y
+  lazos. En cada uno, un arco se extiende mientras los puntos sigan sobre una
+  circunferencia (circuncentro de primero, medio y último; tolerancia del 1 % del
+  radio), con tramos de largo parecido y girando. Un lazo que no es una circunferencia
+  completa se recorre desde su tramo más largo, para no partir un arco.
+
+`find_snap` proyecta los rasgos con `Camera::pixel_at_position` y elige por prioridad
+y radio en píxeles: centro, esquina, arista, superficie de `pick` y suelo. Descarta lo
+que queda detrás del punto de `pick`.
+
+El overlay (`draw_overlays`) se dibuja con egui en una capa propia, como el gizmo.
+
+**Enganche al mover:** transform-gizmo aplica *incrementos* a la pose que recibe. Si
+se le diera la pose ya enganchada, el objeto se desfasaría del cursor. `App::drag_raw`
+guarda la pose cruda que entrega el gizmo, y `gizmo_target` se la devuelve; al objeto
+se le aplica la cruda más el desplazamiento de `measure::ruler_snap`. La tolerancia son
+10 puntos de pantalla, convertidos a unidades del mundo con `world_per_pixel`.
 
 ### Booleanas y cortes
 

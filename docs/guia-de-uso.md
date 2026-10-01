@@ -9,8 +9,7 @@
   - al pie, el último mensaje de estado, el espaciado de la grilla y el selector de
     idioma.
 - **Visor 3D**:
-  - arriba a la izquierda, la barra de herramientas, que aparece al seleccionar un
-    objeto;
+  - arriba a la izquierda, la barra de herramientas;
   - arriba a la derecha, el cubo de vista;
   - la base translúcida en z = 0 marca el "suelo".
 
@@ -127,9 +126,11 @@ pueden editar.
 
 ## Herramientas
 
-Con un objeto seleccionado aparece la barra superior. Solo una herramienta está
-activa a la vez. Se activa con un clic o con su tecla; la misma tecla o **Esc** la
-cierra. Sus opciones aparecen en el panel lateral.
+La barra superior está siempre visible. Mover, Rotar, Corte, Booleana y Apoyar en
+cara actúan sobre el objeto seleccionado y se desactivan sin selección; Medir y Regla
+están siempre disponibles. Solo una herramienta está activa a la vez. Se activa con un
+clic o con su tecla; la misma tecla o **Esc** la cierra. Sus opciones aparecen en el
+panel lateral.
 
 ### Mover (M)
 
@@ -174,6 +175,47 @@ En el panel:
 - Las superficies curvas, como una esfera, no tienen caras planas y el panel lo
   indica.
 
+### Snap del cursor
+
+Con Medir y Regla, el cursor se engancha al rasgo más cercano. La forma del marcador
+amarillo indica a qué:
+
+| Marcador | Se engancha a |
+|---|---|
+| Círculo con cruz | Centro de un agujero, un poste o un arco (p. ej. los extremos de una ranura) |
+| Cuadrado | Esquina |
+| Rombo | Punto de una arista |
+| Punto | La superficie bajo el cursor o, fuera de los objetos, el suelo z = 0 |
+
+Las aristas que cuentan son las "vivas", donde las caras forman más de 30°. El
+facetado de cilindros y esferas no cuenta. Los rasgos tapados por otra superficie se
+ignoran.
+
+### Medir (L)
+
+- Mide la distancia entre dos puntos **a lo largo de un eje**, nunca en diagonal.
+- Primer clic: punto A. Segundo clic: punto B. Un tercer clic empieza otra medición.
+- Mientras falta B, la cota sigue al cursor.
+- El eje es aquel en que más se separan A y B. **X**, **Y** o **Z** lo fijan, y la
+  misma tecla lo libera; también se elige en el panel (*Auto*, X, Y, Z).
+- La cota se dibuja con el color del eje. Una línea punteada une su extremo con B.
+- El panel muestra el valor y, como referencia, ΔX, ΔY y ΔZ.
+- Esc descarta el punto A pendiente. La medición desaparece al cerrar la herramienta.
+
+### Regla (G)
+
+- Primer clic: donde empieza la regla (su cero). Segundo clic: hacia dónde se
+  extiende. El eje se elige como en Medir.
+- Las marcas van cada *Marcas cada* unidades (10 por defecto), con una marca más larga
+  cada cinco. Los números se muestran donde caben.
+- Puede haber varias reglas. Quedan visibles con cualquier herramienta hasta
+  quitarlas en el panel de Regla, donde también se cambian su largo y su espaciado.
+- **Mover con reglas**: al arrastrar un objeto con Mover, se engancha a la marca más
+  cercana cuando está a menos de 10 píxeles. Se enganchan los bordes y el centro de su
+  caja envolvente, sus esquinas y sus centros de agujeros. Solo en los ejes que se
+  están moviendo, y la marca enganchada se resalta.
+- Las reglas no entran en el historial de deshacer.
+
 ## Deshacer y rehacer
 
 **Ctrl+Z** deshace y **Ctrl+Y** (o Ctrl+Shift+Z) rehace. Cubren todo cambio en la
@@ -187,7 +229,9 @@ completo, del manipulador o de un valor, cuenta como un solo paso. Se guardan lo
 | Tecla | Acción |
 |---|---|
 | M / R / C / B / F | Mover / Rotar / Corte / Booleana / Apoyar en cara |
-| Esc | Cerrar la herramienta activa |
+| L / G | Medir / Regla |
+| X / Y / Z | Con Medir o Regla: fijar o liberar el eje |
+| Esc | Descartar el punto pendiente de Medir o Regla; si no lo hay, cerrar la herramienta |
 | Ctrl+Z / Ctrl+Y | Deshacer / rehacer (también Ctrl+Shift+Z) |
 | O | Alternar perspectiva / ortogonal |
 | Ctrl+D | Clonar el objeto seleccionado |
