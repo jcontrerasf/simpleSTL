@@ -814,13 +814,18 @@ struct UiActions {
 
 fn main() {
     i18n::set(i18n::detect());
-    let window = Window::new(WindowSettings {
-        title: "simpleSTL".to_string(),
-        min_size: (640, 480),
-        initial_size: Some((1280, 800)),
-        ..Default::default()
-    })
-    .unwrap();
+    // La ventana se crea con winit directamente: `WindowSettings` de three-d no permite
+    // ponerle ícono.
+    let event_loop = winit::event_loop::EventLoop::new();
+    let winit_window = winit::window::WindowBuilder::new()
+        .with_title("simpleSTL")
+        .with_min_inner_size(winit::dpi::LogicalSize::new(640.0, 480.0))
+        .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+        .with_window_icon(window_icon())
+        .build(&event_loop)
+        .unwrap();
+    winit_window.focus_window();
+    let window = Window::from_winit_window(winit_window, event_loop, SurfaceSettings::default(), false).unwrap();
     let context = window.gl();
 
     let mut control = CameraController::new(vec3(0.0, 0.0, 0.0));
@@ -1171,6 +1176,20 @@ fn main() {
         extra_frames = extra_frames.saturating_sub(1);
         FrameOutput { wait_next_event: extra_frames == 0, ..Default::default() }
     });
+}
+
+/// Ícono de la ventana (barra de título y de tareas). Wayland no lo usa: allí el escritorio
+/// toma el del archivo .desktop.
+fn window_icon() -> Option<winit::window::Icon> {
+    let decoder = png::Decoder::new(&include_bytes!("../packaging/simplestl-64.png")[..]);
+    let mut reader = decoder.read_info().ok()?;
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    let frame = reader.next_frame(&mut rgba).ok()?;
+    if frame.color_type != png::ColorType::Rgba || frame.bit_depth != png::BitDepth::Eight {
+        return None; // scripts/build-icons.sh lo genera como RGBA de 8 bits
+    }
+    rgba.truncate(frame.buffer_size());
+    winit::window::Icon::from_rgba(rgba, frame.width, frame.height).ok()
 }
 
 /// Separa el sufijo de copia " (N)" de un nombre: ("pieza", Some(2)) para "pieza (2)".
@@ -1891,7 +1910,12 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
 
 #[cfg(test)]
 mod tests {
-    use super::{array_offsets, copy_name, uniform_factor};
+    use super::{array_offsets, copy_name, uniform_factor, window_icon};
+
+    #[test]
+    fn window_icon_decodes() {
+        assert!(window_icon().is_some());
+    }
     use three_d::vec3;
 
     #[test]

@@ -234,3 +234,18 @@ memoria. `scripts/build-manifold.sh` compila la versión que espera el crate
 
 Al actualizar `manifold3d` hay que revisar `MANIFOLD_VERSION` en el `build.rs` de
 `manifold-csg-sys` y ajustar `MANIFOLD_REF` en el script.
+
+## Íconos
+
+`packaging/simplestl.svg` es el original. `scripts/build-icons.sh` (Inkscape e
+ImageMagick) genera a partir de él:
+
+- **`packaging/simplestl.ico`** (16 a 256 px): `build.rs` lo incrusta en el `.exe` al
+  compilar en Windows, con `winresource`.
+- **`packaging/simplestl-64.png`**: el ícono de la ventana. `window_icon` en `main.rs`
+  lo decodifica con `png`. Por eso la ventana se crea con winit directamente y se
+  entrega a three-d con `Window::from_winit_window`: `WindowSettings` no admite ícono.
+  En Wayland no se usa; el escritorio toma el del `.desktop`.
+
+El AppImage usa el SVG directamente. Tras editar el SVG hay que volver a ejecutar el
+script y confirmar los archivos generados.

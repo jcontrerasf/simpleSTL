@@ -1,6 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <!-- Luz desde arriba a la izquierda, como en el visor. -->
+    <radialGradient id="sphere" cx="0.36" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#f6bd86"/>
+      <stop offset="0.55" stop-color="#e0965a"/>
+      <stop offset="1" stop-color="#b8682f"/>
+    </radialGradient>
+  </defs>
   <rect width="256" height="256" rx="48" fill="#1e2a38"/>
-  <polygon points="128,40 208,86 128,132 48,86" fill="#7fb3e6"/>
-  <polygon points="48,86 128,132 128,220 48,174" fill="#3d7ab8"/>
-  <polygon points="208,86 128,132 128,220 208,174" fill="#25588c"/>
+  <!-- Sombra suave en el suelo. -->
+  <ellipse cx="124" cy="204" rx="86" ry="13" fill="#000" opacity="0.25"/>
+  <!-- Cubo isométrico con los azules del objeto en el visor. -->
+  <polygon points="100,68 164,104 100,140 36,104" fill="#8ab8e6"/>
+  <polygon points="36,104 100,140 100,212 36,176" fill="#6f9fd2"/>
+  <polygon points="164,104 100,140 100,212 164,176" fill="#4d7fb8"/>
+  <!-- Esfera delante de la esquina del cubo; el borde del color de fondo la separa. -->
+  <circle cx="164" cy="96" r="52" fill="url(#sphere)" stroke="#1e2a38" stroke-width="5"/>
 </svg>

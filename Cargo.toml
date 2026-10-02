@@ -6,8 +6,13 @@ rust-version = "1.92"
 
 [dependencies]
 manifold3d = { version = "0.4.1", default-features = false }
+png = "0.17"
 rfd = "0.17.2"
 stl_io = "0.11.0"
 sys-locale = "0.3.2"
 three-d = { version = "0.19", features = ["egui-gui"] }
 transform-gizmo-egui = "0.9"
+winit = { version = "0.28", default-features = false }
+
+[target."cfg(windows)".build-dependencies]
+winresource = "0.1.31"
