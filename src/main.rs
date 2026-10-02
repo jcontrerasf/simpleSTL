@@ -179,6 +179,44 @@ struct App {
     drag_raw: Option<Pose>,
     /// Marcas de regla a las que está enganchado el objeto que se arrastra.
     snapped_marks: Vec<Vec3>,
+    /// Escalar bloquea la proporción: cualquier eje escala los tres por igual.
+    scale_locked: bool,
+    /// Clonar en matriz abierto en el panel (para el objeto seleccionado).
+    array: Option<ArrayParams>,
+}
+
+/// Parámetros de "Clonar en matriz": copias en columnas (X) × filas (Y), separadas por un
+/// hueco libre entre las cajas envolventes.
+#[derive(Clone, Copy, Debug)]
+struct ArrayParams {
+    object: usize,
+    columns: u32,
+    rows: u32,
+    gap_x: f32,
+    gap_y: f32,
+}
+
+/// Desplazamientos de las copias de una matriz respecto del original, que ocupa la celda
+/// (0, 0); la grilla crece hacia +X y +Y.
+fn array_offsets(columns: u32, rows: u32, size: Vec3, gap_x: f32, gap_y: f32) -> Vec<Vec3> {
+    let (step_x, step_y) = (size.x + gap_x, size.y + gap_y);
+    (0..rows)
+        .flat_map(|row| (0..columns).map(move |col| (col, row)))
+        .filter(|&cell| cell != (0, 0))
+        .map(|(col, row)| vec3(col as f32 * step_x, row as f32 * step_y, 0.0))
+        .collect()
+}
+
+/// Escala mínima por eje (0.1 %).
+const MIN_SCALE: f32 = 0.001;
+
+/// Factor uniforme de un arrastre de escala con la proporción bloqueada: el del eje que
+/// más cambió respecto del inicio.
+fn uniform_factor(start: Vec3, new: Vec3) -> f32 {
+    [new.x / start.x, new.y / start.y, new.z / start.z]
+        .into_iter()
+        .max_by(|a, b| (a - 1.0).abs().total_cmp(&(b - 1.0).abs()))
+        .unwrap_or(1.0)
 }
 
 /// Lo que el historial guarda de cada objeto. La malla se comparte (`Arc`), así que una
@@ -303,22 +341,92 @@ impl App {
         self.facets = None;
     }
 
-    /// Copia del objeto, desplazada en X para que quede al lado del original.
-    fn clone_object(&mut self, object: usize) {
+    /// Agrega una copia del objeto desplazada `offset` y devuelve su índice.
+    fn add_copy(&mut self, object: usize, offset: Vec3) -> usize {
         let original = &self.objects[object];
-        let (min, max) = original.world_bbox;
         let mut pose = original.pose;
-        pose.translation.x += (max.x - min.x) * 1.1;
+        pose.translation += offset;
         let name = copy_name(&original.name, self.objects.iter().map(|o| o.name.as_str()));
         let (mesh, primitive) = (original.mesh.clone(), original.primitive);
         let mut copy = SceneObject::from_local(&self.context, name, mesh, pose, self.next_color());
         copy.primitive = primitive;
-        self.status = match i18n::current() {
-            Lang::Es => format!("Clonado como {}", copy.name),
-            Lang::En => format!("Cloned as {}", copy.name),
-        };
         self.objects.push(copy);
-        self.selected = Some(self.objects.len() - 1);
+        self.objects.len() - 1
+    }
+
+    /// Copia del objeto, desplazada en X para que quede al lado del original.
+    fn clone_object(&mut self, object: usize) {
+        let (min, max) = self.objects[object].world_bbox;
+        let copy = self.add_copy(object, vec3((max.x - min.x) * 1.1, 0.0, 0.0));
+        self.status = match i18n::current() {
+            Lang::Es => format!("Clonado como {}", self.objects[copy].name),
+            Lang::En => format!("Cloned as {}", self.objects[copy].name),
+        };
+        self.selected = Some(copy);
+    }
+
+    /// Crea las copias de "Clonar en matriz" y cierra su sección.
+    fn create_array(&mut self) {
+        let Some(params) = self.array.take() else { return };
+        let Some(obj) = self.objects.get(params.object) else { return };
+        let (min, max) = obj.world_bbox;
+        let offsets = array_offsets(params.columns, params.rows, max - min, params.gap_x, params.gap_y);
+        for &offset in &offsets {
+            self.add_copy(params.object, offset);
+        }
+        let n = offsets.len();
+        self.status = match i18n::current() {
+            Lang::Es => format!("Creadas {n} copias de {}", self.objects[params.object].name),
+            Lang::En => format!("Created {n} copies of {}", self.objects[params.object].name),
+        };
+        self.selected = Some(params.object);
+    }
+
+    /// Cambia la escala del objeto manteniendo su base a la misma altura.
+    fn set_scale(&mut self, object: usize, scale: Vec3) {
+        let obj = &mut self.objects[object];
+        let bottom = obj.world_bbox.0.z;
+        let mut pose = obj.pose;
+        pose.scale = vec3(scale.x.max(MIN_SCALE), scale.y.max(MIN_SCALE), scale.z.max(MIN_SCALE));
+        obj.set_pose(pose);
+        pose.translation.z += bottom - obj.world_bbox.0.z;
+        obj.set_pose(pose);
+    }
+
+    /// Aplica la escala que entrega el gizmo; con la proporción bloqueada, cualquier asa
+    /// escala los tres ejes por igual.
+    fn drag_scale(&mut self, object: usize, raw: Pose) {
+        let start = *self.drag_start.get_or_insert(self.objects[object].pose);
+        self.drag_raw = Some(raw);
+        let scale = if self.scale_locked { start.scale * uniform_factor(start.scale, raw.scale) } else { raw.scale };
+        self.set_scale(object, scale);
+    }
+
+    /// Terminada una escala, la absorbe en los parámetros de la primitiva si la forma sigue
+    /// siendo de ese tipo; si no, la pieza pasa a ser una malla común con su escala.
+    fn settle_scale(&mut self) {
+        let Some(obj) = self.selected.and_then(|i| self.objects.get_mut(i)) else { return };
+        let Some(primitive) = obj.primitive else { return };
+        let s = obj.pose.scale;
+        if s == vec3(1.0, 1.0, 1.0) {
+            return;
+        }
+        match primitive.scaled([s.x, s.y, s.z]).and_then(|p| p.mesh().map(|m| (p, m))) {
+            Some((scaled, mesh)) => {
+                // Las mallas de las primitivas están centradas: la forma en el mundo no cambia.
+                obj.pose.scale = vec3(1.0, 1.0, 1.0);
+                obj.set_local_mesh(&self.context, mesh);
+                obj.primitive = Some(scaled);
+            }
+            None => {
+                obj.primitive = None;
+                self.status = match i18n::current() {
+                    Lang::Es => format!("{} ya no es una primitiva (escala no uniforme)", obj.name),
+                    Lang::En => format!("{} is no longer a primitive (non-uniform scale)", obj.name),
+                };
+            }
+        }
+        self.facets = None;
     }
 
     fn load(&mut self, path: &Path) {
@@ -365,6 +473,9 @@ impl App {
         }
         if !matches!(self.tool, Some(Tool::Measure | Tool::Ruler)) {
             self.hover_snap = None;
+        }
+        if self.array.is_some_and(|a| Some(a.object) != self.selected) {
+            self.array = None;
         }
         let Some(selected) = self.selected else {
             if self.tool.is_some_and(Tool::needs_object) {
@@ -591,6 +702,7 @@ impl App {
         self.selected = state.selected.filter(|&i| i < self.objects.len());
         self.facets = None;
         self.renaming = None;
+        self.array = None;
         self.committed = state;
     }
 
@@ -696,6 +808,8 @@ struct UiActions {
     clone: Option<usize>,
     resize: Option<(usize, Primitive)>,
     repair: Option<usize>,
+    scale: Option<(usize, Vec3)>,
+    create_array: bool,
 }
 
 fn main() {
@@ -753,6 +867,8 @@ fn main() {
         drag_start: None,
         drag_raw: None,
         snapped_marks: Vec::new(),
+        scale_locked: true,
+        array: None,
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -790,6 +906,7 @@ fn main() {
         let mut blocked: Vec<egui::Rect> = Vec::new();
         let mut orthographic = control.is_orthographic();
         let (tool_before, selected_before) = (app.tool, app.selected);
+        let mut pointer_over_ui = false;
 
         gui.update(
             &mut frame_input.events,
@@ -818,6 +935,9 @@ fn main() {
                 blocked.push(toolbar::show(ui.ctx(), view_rect, max_width, has_selection, &mut app.tool));
                 draw_overlays(ui.ctx(), &camera, view_rect, dpr, window_viewport.height, &app);
                 dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, &blocked, gizmo_target(&app));
+                // Menús y listas desplegables pueden quedar sobre el visor: un clic en ellos no
+                // debe llegar a la escena (deseleccionaría el objeto).
+                pointer_over_ui = ui.ctx().is_pointer_over_egui();
             },
         );
 
@@ -831,6 +951,7 @@ fn main() {
                 // Enganche a las reglas: 10 puntos de pantalla, en unidades del mundo.
                 Some(Tool::Cut) => app.drag_cut_plane(pose, 10.0 * dpr * world_per_pixel(&camera, pose.translation)),
                 Some(Tool::Move) => app.drag_to(i, pose, 10.0 * dpr * world_per_pixel(&camera, pose.translation)),
+                Some(Tool::Scale) => app.drag_scale(i, pose),
                 _ => app.objects[i].set_pose(pose),
             }
         }
@@ -875,6 +996,9 @@ fn main() {
         if let Some((i, pose)) = actions.pose {
             app.objects[i].set_pose(pose);
         }
+        if let Some((i, scale)) = actions.scale {
+            app.set_scale(i, scale);
+        }
         match cube_action {
             Some(viewcube::Action::LookFrom(direction)) => control.look_from(direction),
             Some(viewcube::Action::Orbit(delta)) => control.orbit_by_drag(&mut camera, delta),
@@ -883,7 +1007,7 @@ fn main() {
         // Posición física (three-d) en el visor libre de controles, si corresponde.
         let in_scene = |p: PhysicalPoint| {
             let point = egui::pos2(p.x / dpr, (window_viewport.height as f32 - p.y) / dpr);
-            p.x >= viewport.x as f32 && !blocked.iter().any(|r| r.contains(point))
+            !pointer_over_ui && p.x >= viewport.x as f32 && !blocked.iter().any(|r| r.contains(point))
         };
 
         app.update_facets();
@@ -957,6 +1081,7 @@ fn main() {
                 s => s,
             };
             app.renaming = None;
+            app.array = None;
         }
         if let Some(obj) = actions.export.and_then(|i| app.objects.get(i)) {
             let default_name = format!("{}.stl", obj.name.trim_end_matches(".stl"));
@@ -983,6 +1108,9 @@ fn main() {
         }
         if let Some(i) = actions.repair {
             app.repair_object(i);
+        }
+        if actions.create_array {
+            app.create_array();
         }
         if actions.boolean {
             app.apply_boolean();
@@ -1015,6 +1143,7 @@ fn main() {
 
         // Confirmar cambios en el historial cuando no hay un arrastre en curso.
         if !gui.context().input(|i| i.pointer.any_down()) {
+            app.settle_scale();
             app.commit_changes();
             app.drag_start = None;
             app.drag_raw = None;
@@ -1075,6 +1204,7 @@ fn gizmo_target(app: &App) -> Option<(Pose, GizmoSetup)> {
     match app.tool? {
         Tool::Move => Some((app.drag_raw.unwrap_or(obj.pose), GizmoSetup::translate())),
         Tool::Rotate => Some((obj.pose, GizmoSetup::rotate())),
+        Tool::Scale => Some((app.drag_raw.unwrap_or(obj.pose), GizmoSetup::scale())),
         Tool::Cut => Some((app.drag_raw.unwrap_or(app.cut_pose), GizmoSetup::cut_plane())),
         Tool::Boolean | Tool::PlaceOnFace | Tool::Measure | Tool::Ruler => None,
     }
@@ -1098,6 +1228,23 @@ fn draw_overlays(ctx: &egui::Context, camera: &Camera, view: egui::Rect, dpr: f3
     };
     for ruler in &app.rulers {
         measure::draw_ruler(&painter, &project, ruler, &app.snapped_marks);
+    }
+    // Vista previa de "Clonar en matriz": la caja de cada copia.
+    if let Some((params, obj)) = app.array.and_then(|a| app.objects.get(a.object).map(|o| (a, o))) {
+        let (min, max) = obj.world_bbox;
+        let stroke = egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(255, 200, 60));
+        for offset in array_offsets(params.columns, params.rows, max - min, params.gap_x, params.gap_y) {
+            let corner = |k: usize| {
+                let pick = |bit: usize, lo: f32, hi: f32| if k & bit == 0 { lo } else { hi };
+                vec3(pick(1, min.x, max.x), pick(2, min.y, max.y), pick(4, min.z, max.z)) + offset
+            };
+            // Aristas de la caja: pares de esquinas que difieren en un solo eje.
+            for (a, b) in (0..8).flat_map(|a| [1, 2, 4].map(|bit| (a, a | bit))).filter(|(a, b)| a != b) {
+                if let (Some(pa), Some(pb)) = (project(corner(a)), project(corner(b))) {
+                    painter.line_segment([pa, pb], stroke);
+                }
+            }
+        }
     }
     let hover = app.hover_snap.map(|s| s.position);
     match app.tool {
@@ -1181,7 +1328,8 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         if !app.status.is_empty() {
             ui.label(&app.status);
         }
-        ui.weak(format!("{} {}", tr("Base z = 0 · grilla cada", "Base z = 0 · grid every"), app.grid_spacing));
+        ui.weak(tr("Todas las medidas están en mm", "All measurements are in mm"));
+        ui.weak(format!("{} {} mm", tr("Base z = 0 · grilla cada", "Base z = 0 · grid every"), app.grid_spacing));
         ui.weak(tr(
             "Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom",
             "Click: select · Left: orbit · Right/Middle: pan · Wheel: zoom",
@@ -1210,6 +1358,7 @@ enum ObjectAction {
     Clone,
     Export,
     Delete,
+    Array,
 }
 
 /// Menú de un objeto de la lista (botón "…" o clic derecho sobre el nombre).
@@ -1220,6 +1369,9 @@ fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
     }
     if ui.button(tr("Clonar (Ctrl+D)", "Clone (Ctrl+D)")).clicked() {
         action = Some(ObjectAction::Clone);
+    }
+    if ui.button(tr("Clonar en matriz…", "Clone as array…")).clicked() {
+        action = Some(ObjectAction::Array);
     }
     if ui.button(tr("Exportar STL…", "Export STL…")).clicked() {
         action = Some(ObjectAction::Export);
@@ -1316,7 +1468,9 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button("…", |ui| menu_action = object_menu(ui));
                 let label = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.selectable_label(app.selected == Some(i), &obj.name)
+                    // Truncado al ancho libre: un nombre largo no debe tapar el botón "…".
+                    let button = egui::Button::selectable(app.selected == Some(i), obj.name.as_str()).truncate();
+                    ui.add(button).on_hover_text(&obj.name)
                 });
                 let label = label.inner;
                 if label.clicked() {
@@ -1333,6 +1487,10 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                     app.rename_needs_focus = true;
                 }
                 Some(ObjectAction::Clone) => actions.clone = Some(i),
+                Some(ObjectAction::Array) => {
+                    app.selected = Some(i);
+                    app.array = Some(ArrayParams { object: i, columns: 2, rows: 2, gap_x: 5.0, gap_y: 5.0 });
+                }
                 Some(ObjectAction::Export) => actions.export = Some(i),
                 Some(ObjectAction::Delete) => actions.delete = Some(i),
                 None => {}
@@ -1344,9 +1502,11 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         ui.separator();
         ui.label(egui::RichText::new(&obj.name).strong());
         let (local_min, local_max) = obj.mesh.bounding_box();
+        let s = obj.pose.scale;
         let size = local_max - local_min;
+        let size = vec3(size.x * s.x, size.y * s.y, size.z * s.z);
         let closed = obj.topology.is_closed();
-        let volume = obj.mesh.volume();
+        let volume = obj.mesh.volume() * s.x * s.y * s.z;
         // Cerrada pero con volumen negativo: las caras apuntan hacia adentro.
         let inverted = closed && volume < 0.0;
         egui::Grid::new("info").num_columns(2).show(ui, |ui| {
@@ -1397,6 +1557,10 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                 actions.resize = Some((i, resized));
             }
         }
+    }
+    if app.array.is_some_and(|a| Some(a.object) == app.selected) {
+        ui.separator();
+        array_section(ui, app, actions);
     }
 
     if app.selected.is_some() || app.tool.is_some() {
@@ -1473,8 +1637,8 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
 fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     let Some(tool) = app.tool else {
         ui.weak(tr(
-            "Herramientas en la barra superior: Mover (M), Rotar (R), Corte (C), Booleana (B), Apoyar en cara (F), Medir (L), Regla (G). Esc cierra la activa.",
-            "Tools in the top bar: Move (M), Rotate (R), Cut (C), Boolean (B), Place on face (F), Measure (L), Ruler (G). Esc closes the active one.",
+            "Herramientas en la barra superior: Mover (M), Rotar (R), Escalar (S), Corte (C), Booleana (B), Apoyar en cara (F), Medir (L), Regla (G). Esc cierra la activa.",
+            "Tools in the top bar: Move (M), Rotate (R), Scale (S), Cut (C), Boolean (B), Place on face (F), Measure (L), Ruler (G). Esc closes the active one.",
         ));
         return;
     };
@@ -1509,10 +1673,11 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         }
         Tool::Rotate => {
             if ui.button(tr("Restablecer rotación", "Reset rotation")).clicked() {
-                actions.pose = Some((i, Pose::at(pose.translation)));
+                actions.pose = Some((i, Pose { rotation: Pose::at(pose.translation).rotation, ..pose }));
             }
             ui.weak(tr("Arrastra los anillos. Ctrl: pasos de 15°.", "Drag the rings. Ctrl: steps of 15°."));
         }
+        Tool::Scale => scale_section(ui, app, actions, i),
         Tool::Cut => cut_section(ui, app, actions, i),
         Tool::Boolean => boolean_panel(ui, app, actions),
         Tool::Measure | Tool::Ruler => {}
@@ -1534,6 +1699,84 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             };
         }
     }
+}
+
+/// Escala por eje (en los ejes del objeto), en porcentaje o como medida objetivo.
+fn scale_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usize) {
+    let obj = &app.objects[i];
+    let (local_min, local_max) = obj.mesh.bounding_box();
+    let base = local_max - local_min;
+    let scale = obj.pose.scale;
+    ui.checkbox(&mut app.scale_locked, tr("Escala uniforme", "Uniform scale"))
+        .on_hover_text(tr("Cualquier eje escala los tres por igual", "Any axis scales all three equally"));
+    let mut factor: Option<(usize, f32)> = None;
+    egui::Grid::new("scale").num_columns(3).show(ui, |ui| {
+        ui.label("");
+        ui.label("%");
+        ui.label(tr("Tamaño", "Size"));
+        ui.end_row();
+        for (k, axis) in Axis::ALL.into_iter().enumerate() {
+            ui.label(egui::RichText::new(axis.name()).color(axis.color()));
+            let mut percent = scale[k] * 100.0;
+            let drag = egui::DragValue::new(&mut percent).range(MIN_SCALE * 100.0..=f32::MAX).speed(0.5).max_decimals(2).suffix(" %");
+            if ui.add(drag).changed() {
+                factor = Some((k, percent / 100.0 / scale[k]));
+            }
+            let mut size = base[k] * scale[k];
+            let drag = egui::DragValue::new(&mut size).range(primitives::MIN_SIZE..=f32::MAX).speed(0.1).max_decimals(2);
+            if ui.add_enabled(base[k] > 0.0, drag).changed() {
+                factor = Some((k, size / (base[k] * scale[k])));
+            }
+            ui.end_row();
+        }
+    });
+    if let Some((k, f)) = factor {
+        let mut new = scale;
+        if app.scale_locked {
+            new *= f;
+        } else {
+            new[k] *= f;
+        }
+        actions.scale = Some((i, new));
+    }
+    if ui.button(tr("Restablecer escala", "Reset scale")).clicked() {
+        actions.scale = Some((i, vec3(1.0, 1.0, 1.0)));
+    }
+    ui.weak(tr(
+        "Arrastra los cubos del manipulador; el círculo escala en todos los ejes. Ctrl: pasos de 10 %. Los ejes son los del objeto.",
+        "Drag the manipulator cubes; the circle scales all axes. Ctrl: steps of 10 %. Axes are the object's own.",
+    ));
+}
+
+/// "Clonar en matriz": columnas × filas con un hueco entre piezas.
+fn array_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
+    let Some(params) = app.array.as_mut() else { return };
+    ui.label(egui::RichText::new(tr("Clonar en matriz", "Clone as array")).strong());
+    egui::Grid::new("array").num_columns(2).show(ui, |ui| {
+        ui.label(tr("Columnas (X)", "Columns (X)"));
+        ui.add(egui::DragValue::new(&mut params.columns).range(1..=20));
+        ui.end_row();
+        ui.label(tr("Filas (Y)", "Rows (Y)"));
+        ui.add(egui::DragValue::new(&mut params.rows).range(1..=20));
+        ui.end_row();
+        ui.label(tr("Hueco X", "Gap X"));
+        ui.add(egui::DragValue::new(&mut params.gap_x).range(0.0..=f32::MAX).speed(0.1).max_decimals(2));
+        ui.end_row();
+        ui.label(tr("Hueco Y", "Gap Y"));
+        ui.add(egui::DragValue::new(&mut params.gap_y).range(0.0..=f32::MAX).speed(0.1).max_decimals(2));
+        ui.end_row();
+    });
+    let total = params.columns * params.rows;
+    ui.weak(match i18n::current() {
+        Lang::Es => format!("{total} piezas en total ({} copias nuevas). El hueco es la distancia libre entre piezas.", total - 1),
+        Lang::En => format!("{total} pieces in total ({} new copies). The gap is the free distance between pieces.", total - 1),
+    });
+    ui.horizontal(|ui| {
+        actions.create_array = ui.add_enabled(total > 1, egui::Button::new(tr("Crear", "Create"))).clicked();
+        if ui.button(tr("Cancelar", "Cancel")).clicked() {
+            app.array = None;
+        }
+    });
 }
 
 /// Eje de Medir y Regla: automático (el dominante) o fijado.
@@ -1648,7 +1891,25 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
 
 #[cfg(test)]
 mod tests {
-    use super::copy_name;
+    use super::{array_offsets, copy_name, uniform_factor};
+    use three_d::vec3;
+
+    #[test]
+    fn array_offsets_use_size_plus_gap_and_skip_the_original() {
+        let offsets = array_offsets(3, 2, vec3(20.0, 10.0, 5.0), 5.0, 8.0);
+        assert_eq!(offsets.len(), 5);
+        assert!(!offsets.contains(&vec3(0.0, 0.0, 0.0)));
+        assert!(offsets.contains(&vec3(50.0, 0.0, 0.0)));
+        assert!(offsets.contains(&vec3(25.0, 18.0, 0.0)));
+        assert!(array_offsets(1, 1, vec3(1.0, 1.0, 1.0), 0.0, 0.0).is_empty());
+    }
+
+    #[test]
+    fn locked_scale_follows_the_axis_that_changed_most() {
+        let start = vec3(1.0, 2.0, 1.0);
+        assert_eq!(uniform_factor(start, vec3(1.0, 3.0, 1.0)), 1.5);
+        assert_eq!(uniform_factor(start, vec3(0.5, 2.0, 1.0)), 0.5);
+    }
 
     #[test]
     fn copies_are_numbered_without_nesting() {

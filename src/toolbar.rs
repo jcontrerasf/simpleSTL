@@ -11,6 +11,7 @@ use crate::i18n::tr;
 pub enum Tool {
     Move,
     Rotate,
+    Scale,
     Cut,
     Boolean,
     PlaceOnFace,
@@ -19,8 +20,8 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] =
-        [Tool::Move, Tool::Rotate, Tool::Cut, Tool::Boolean, Tool::PlaceOnFace, Tool::Measure, Tool::Ruler];
+    pub const ALL: [Tool; 8] =
+        [Tool::Move, Tool::Rotate, Tool::Scale, Tool::Cut, Tool::Boolean, Tool::PlaceOnFace, Tool::Measure, Tool::Ruler];
 
     /// Si la herramienta actúa sobre el objeto seleccionado.
     pub fn needs_object(self) -> bool {
@@ -31,6 +32,7 @@ impl Tool {
         match self {
             Tool::Move => tr("Mover", "Move"),
             Tool::Rotate => tr("Rotar", "Rotate"),
+            Tool::Scale => tr("Escalar", "Scale"),
             Tool::Cut => tr("Corte", "Cut"),
             Tool::Boolean => tr("Booleana", "Boolean"),
             Tool::PlaceOnFace => tr("Apoyar en cara", "Place on face"),
@@ -43,6 +45,7 @@ impl Tool {
         match self {
             Tool::Move => Key::M,
             Tool::Rotate => Key::R,
+            Tool::Scale => Key::S,
             Tool::Cut => Key::C,
             Tool::Boolean => Key::B,
             Tool::PlaceOnFace => Key::F,
@@ -55,6 +58,7 @@ impl Tool {
         match self {
             Tool::Move => "M",
             Tool::Rotate => "R",
+            Tool::Scale => "S",
             Tool::Cut => "C",
             Tool::Boolean => "B",
             Tool::PlaceOnFace => "F",

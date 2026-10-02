@@ -1,4 +1,4 @@
-//! Manipulador 3D (trasladar/rotar) sobre el objeto seleccionado o el plano de corte,
+//! Manipulador 3D (trasladar/rotar/escalar) sobre el objeto seleccionado o el plano de corte,
 //! usando `transform-gizmo`.
 //!
 //! No se usa `GizmoExt::interact` de transform-gizmo-egui: registra un widget de egui
@@ -11,41 +11,45 @@ use three_d::{Camera, Event, Mat4, MouseButton, Quat, Vec3, vec3};
 use transform_gizmo_egui::math::{DQuat, DVec3, Transform};
 use transform_gizmo_egui::prelude::*;
 
-/// Posición y orientación de un objeto. Las mallas se guardan centradas en su origen
-/// local, así que la traslación es también el centro de rotación.
+/// Posición, orientación y escala de un objeto. Las mallas se guardan centradas en su
+/// origen local, así que la traslación es también el centro de rotación y de escala.
+/// La escala va en los ejes del objeto (antes de rotar).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pose {
     pub translation: Vec3,
     pub rotation: Quat,
+    pub scale: Vec3,
 }
 
 impl Pose {
     pub fn at(translation: Vec3) -> Self {
-        Self { translation, rotation: Quat::new(1.0, 0.0, 0.0, 0.0) }
+        Self { translation, rotation: Quat::new(1.0, 0.0, 0.0, 0.0), scale: vec3(1.0, 1.0, 1.0) }
     }
 
     pub fn matrix(&self) -> Mat4 {
-        Mat4::from_translation(self.translation) * Mat4::from(self.rotation)
+        let s = self.scale;
+        Mat4::from_translation(self.translation) * Mat4::from(self.rotation) * Mat4::from_nonuniform_scale(s.x, s.y, s.z)
     }
 
     pub fn apply(&self, p: Vec3) -> Vec3 {
-        self.rotation * p + self.translation
+        self.rotation * vec3(p.x * self.scale.x, p.y * self.scale.y, p.z * self.scale.z) + self.translation
     }
 
     fn to_gizmo(self) -> Transform {
-        let (t, q) = (self.translation, self.rotation);
+        let (t, q, s) = (self.translation, self.rotation, self.scale);
         Transform::from_scale_rotation_translation(
-            DVec3::ONE,
+            DVec3::new(s.x as f64, s.y as f64, s.z as f64),
             DQuat::from_xyzw(q.v.x as f64, q.v.y as f64, q.v.z as f64, q.s as f64),
             DVec3::new(t.x as f64, t.y as f64, t.z as f64),
         )
     }
 
     fn from_gizmo(t: &Transform) -> Self {
-        let (p, q) = (t.translation, t.rotation);
+        let (p, q, s) = (t.translation, t.rotation, t.scale);
         Self {
             translation: vec3(p.x as f32, p.y as f32, p.z as f32),
             rotation: Quat::new(q.s as f32, q.v.x as f32, q.v.y as f32, q.v.z as f32),
+            scale: vec3(s.x as f32, s.y as f32, s.z as f32),
         }
     }
 }
@@ -67,6 +71,14 @@ impl GizmoSetup {
 
     pub fn rotate() -> Self {
         Self { modes: GizmoMode::RotateX | GizmoMode::RotateY | GizmoMode::RotateZ, orientation: GizmoOrientation::Global }
+    }
+
+    /// Escala en los ejes del objeto; el cuadrado central escala en forma uniforme.
+    pub fn scale() -> Self {
+        Self {
+            modes: GizmoMode::ScaleX | GizmoMode::ScaleY | GizmoMode::ScaleZ | GizmoMode::ScaleUniform,
+            orientation: GizmoOrientation::Local,
+        }
     }
 
     /// Plano de corte (normal = Z local): la flecha lo desplaza a lo largo de su normal
@@ -165,6 +177,7 @@ impl Manipulator {
             snapping: self.snapping,
             snap_angle: 15f32.to_radians(),
             snap_distance: 1.0,
+            snap_scale: 0.1,
             pixels_per_point: ctx.pixels_per_point(),
             ..Default::default()
         });
@@ -238,4 +251,23 @@ impl Manipulator {
 fn row_matrix(m: Mat4) -> mint::RowMatrix4<f64> {
     let row = |i: usize| mint::Vector4 { x: m.x[i] as f64, y: m.y[i] as f64, z: m.z[i] as f64, w: m.w[i] as f64 };
     mint::RowMatrix4 { x: row(0), y: row(1), z: row(2), w: row(3) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use three_d::{InnerSpace, Rotation3, Transform as _, degrees};
+
+    #[test]
+    fn apply_matches_matrix_with_nonuniform_scale_and_rotation() {
+        let pose = Pose {
+            translation: vec3(1.0, 2.0, 3.0),
+            rotation: Quat::from_angle_z(degrees(30.0)),
+            scale: vec3(2.0, 0.5, 3.0),
+        };
+        let p = vec3(1.0, -4.0, 0.5);
+        assert!((pose.apply(p) - pose.matrix().transform_point(three_d::Point3::new(p.x, p.y, p.z)).to_homogeneous().truncate()).magnitude() < 1e-5);
+        // Ida y vuelta por el gizmo conserva la escala.
+        assert_eq!(Pose::from_gizmo(&pose.to_gizmo()).scale, pose.scale);
+    }
 }

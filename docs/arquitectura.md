@@ -30,9 +30,11 @@ Cada `SceneObject` guarda:
 
 - **`mesh`**: la malla en coordenadas **locales**, centrada en el origen al crearse.
   Es un `Arc<MeshData>` compartido con los clones y con el historial.
-- **`pose`**: traslación y rotación (cuaternión). Como la malla está centrada, la
-  traslación es también el centro de rotación, y por eso el manipulador rota el
-  objeto sobre sí mismo.
+- **`pose`**: traslación, rotación (cuaternión) y escala por eje. La escala va en los
+  ejes del objeto, antes de rotar: `apply(p) = R·(S∘p) + t`. Como la malla está
+  centrada, la traslación es también el centro de rotación y de escala, y por eso el
+  manipulador rota y escala el objeto sobre sí mismo. three-d ilumina bien la escala no
+  uniforme, porque usa la inversa transpuesta como matriz de normales.
 - **`world_bbox`**: la caja envolvente en el mundo, recalculada en `set_pose`.
 - **`model`**: la copia en GPU (`Gm<Mesh, PhysicalMaterial>`). La transformación de
   la pose se aplica como matriz de modelo; los vértices no se tocan.
@@ -202,7 +204,14 @@ guarda la pose cruda que entrega el gizmo, y `gizmo_target` se la devuelve; al o
 se le aplica la cruda más el desplazamiento de `measure::ruler_snap`. El plano de corte
 usa el mismo mecanismo con `measure::plane_snap`: busca dónde cruza el plano cada regla
 y lo desplaza a lo largo de su normal hasta la marca más cercana. Solo al desplazarlo, no
-al inclinarlo. La tolerancia son
+al inclinarlo.
+
+**Escala:** `drag_scale` usa el mismo `drag_raw`, porque al corregir la altura de la
+base cambia la traslación y movería el origen del gizmo a mitad del arrastre. Con la
+proporción bloqueada, `uniform_factor` toma el eje que más cambió. En el punto de
+confirmación, `settle_scale` intenta absorber la escala de una primitiva en sus
+parámetros (`Primitive::scaled`). Si la forma deja de ser de ese tipo, la pieza pasa a
+malla común y conserva la escala en la pose. La tolerancia son
 10 puntos de pantalla, convertidos a unidades del mundo con `world_per_pixel`.
 
 ### Booleanas y cortes

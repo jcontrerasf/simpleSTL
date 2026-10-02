@@ -6,8 +6,8 @@
   - arriba, los botones *Abrir STL…*, *Primitivas* y *Encuadrar*;
   - luego, la lista de objetos y la información del seleccionado;
   - debajo, las opciones de la herramienta activa;
-  - al pie, el último mensaje de estado, el espaciado de la grilla y el selector de
-    idioma.
+  - al pie, el último mensaje de estado, el aviso de que todas las medidas están en
+    mm, el espaciado de la grilla y el selector de idioma.
 - **Visor 3D**:
   - arriba a la izquierda, la barra de herramientas;
   - arriba a la derecha, el cubo de vista;
@@ -59,12 +59,22 @@ Cada fila de la lista tiene:
 - **Color**: clic para cambiarlo.
 - **Nombre**: un clic lo selecciona y un doble clic lo renombra. Enter o hacer clic
   afuera confirma y Esc cancela.
-- **…** (o clic derecho sobre el nombre): *Renombrar*, *Clonar*, *Exportar STL…* y
-  *Eliminar* (también con la tecla **Supr** sobre el objeto seleccionado).
+- **…** (o clic derecho sobre el nombre): *Renombrar*, *Clonar*, *Clonar en matriz…*,
+  *Exportar STL…* y *Eliminar* (también con la tecla **Supr** sobre el objeto
+  seleccionado).
 
 Al clonar, la copia aparece al lado del original y se llama `nombre (1)`,
 `nombre (2)`… Clonar una copia continúa la numeración en vez de acumular
 sufijos.
+
+**Clonar en matriz…** abre una sección en el panel:
+
+- **Columnas (X)** y **Filas (Y)**: hasta 20 × 20. El original ocupa la primera
+  celda y la grilla crece hacia +X y +Y.
+- **Hueco X** y **Hueco Y**: la distancia libre entre las piezas, borde a borde.
+- Mientras la sección está abierta, el visor muestra en amarillo la caja de cada copia.
+- **Crear** agrega las copias, con los mismos nombres numerados que al clonar. Todas
+  juntas se deshacen en un solo paso.
 
 La información del objeto seleccionado incluye:
 
@@ -142,6 +152,28 @@ puede escribir directamente. Con **Ctrl** el movimiento va en pasos de 1 unidad.
 Anillos para rotar alrededor de X, Y y Z, siempre sobre el centro del objeto. Con
 **Ctrl** la rotación va en pasos de 15°. *Restablecer rotación* vuelve a la
 orientación original.
+
+### Escalar (S)
+
+- **Manipulador:** los cubos de cada eje escalan en ese eje. El círculo exterior escala
+  en todos.
+- **Ctrl:** la escala va en pasos de 10 %.
+- **Ejes:** son los del objeto; si está rotado, giran con él.
+- **Base:** se queda a la misma altura.
+
+En el panel:
+
+- **Escala uniforme** (activado por defecto): cualquier cambio, desde el manipulador o
+  desde los campos, escala los tres ejes por igual.
+- **Por eje:** el porcentaje (**%**) y el **Tamaño** objetivo. Al cambiar uno se
+  actualiza el otro.
+- **Restablecer escala** vuelve al 100 %.
+
+En las primitivas, al soltar, la escala pasa a sus dimensiones si la forma sigue siendo
+del mismo tipo: un cubo siempre, y un cilindro, cono, tubo o caja redondeada si X e Y
+escalan igual. Una esfera solo si la escala es uniforme. Si no, la pieza pasa a ser una
+malla común, como tras una booleana, y el mensaje de estado lo avisa. En las mallas
+comunes, el porcentaje se conserva.
 
 ### Corte (C)
 
@@ -234,7 +266,7 @@ completo, del manipulador o de un valor, cuenta como un solo paso. Se guardan lo
 
 | Tecla | Acción |
 |---|---|
-| M / R / C / B / F | Mover / Rotar / Corte / Booleana / Apoyar en cara |
+| M / R / S / C / B / F | Mover / Rotar / Escalar / Corte / Booleana / Apoyar en cara |
 | L / G | Medir / Regla |
 | X / Y / Z | Con Medir o Regla: fijar o liberar el eje |
 | Esc | Descartar el punto pendiente de Medir o Regla; si no lo hay, cerrar la herramienta |

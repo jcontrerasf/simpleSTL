@@ -56,6 +56,35 @@ impl Primitive {
         self
     }
 
+    /// La misma primitiva con la escala `s` (en sus ejes) absorbida en sus parámetros, si
+    /// la forma escalada sigue siendo de ese tipo: un cilindro estirado solo en X sería
+    /// ovalado y ya no es un cilindro.
+    pub fn scaled(&self, s: [f32; 3]) -> Option<Primitive> {
+        let [sx, sy, sz] = s;
+        let same = |a: f32, b: f32| (a - b).abs() <= 1e-4 * a.abs().max(b.abs());
+        let round_base = same(sx, sy);
+        let scaled = match *self {
+            Primitive::Box { size: [x, y, z] } => Primitive::Box { size: [x * sx, y * sy, z * sz] },
+            Primitive::RoundedBox { size: [x, y, z], radius, segments } if round_base => {
+                Primitive::RoundedBox { size: [x * sx, y * sy, z * sz], radius: radius * sx, segments }
+            }
+            Primitive::Sphere { radius, segments } if round_base && same(sx, sz) => {
+                Primitive::Sphere { radius: radius * sx, segments }
+            }
+            Primitive::Cylinder { radius, height, segments } if round_base => {
+                Primitive::Cylinder { radius: radius * sx, height: height * sz, segments }
+            }
+            Primitive::Cone { radius_bottom, radius_top, height, segments } if round_base => {
+                Primitive::Cone { radius_bottom: radius_bottom * sx, radius_top: radius_top * sx, height: height * sz, segments }
+            }
+            Primitive::Tube { radius_outer, radius_inner, height, segments } if round_base => {
+                Primitive::Tube { radius_outer: radius_outer * sx, radius_inner: radius_inner * sx, height: height * sz, segments }
+            }
+            _ => return None,
+        };
+        Some(scaled.normalized())
+    }
+
     /// Malla centrada en el origen (cerrada, apta para booleanas).
     pub fn mesh(&self) -> Option<MeshData> {
         match *self {
@@ -105,6 +134,27 @@ mod tests {
         assert!((rounded(2.0) / exact(2.0) - 1.0).abs() < 0.01, "caja redondeada {}", rounded(2.0));
         assert!((rounded(5.0) / exact(5.0) - 1.0).abs() < 0.01, "ranura {}", rounded(5.0));
         assert!((rounded(0.0) - 1500.0).abs() < 1e-2);
+    }
+
+    #[test]
+    fn scale_is_absorbed_only_when_the_shape_keeps_its_type() {
+        let volume = |p: Primitive| p.mesh().unwrap().volume().abs();
+        let cube = Primitive::Box { size: [20.0, 20.0, 20.0] };
+        let stretched = cube.scaled([1.5, 1.0, 0.5]).unwrap();
+        assert_eq!(stretched, Primitive::Box { size: [30.0, 20.0, 10.0] });
+        assert!((volume(stretched) - volume(cube) * 0.75).abs() < 1e-2);
+
+        let cylinder = Primitive::Cylinder { radius: 10.0, height: 20.0, segments: 48 };
+        assert_eq!(cylinder.scaled([2.0, 2.0, 0.5]), Some(Primitive::Cylinder { radius: 20.0, height: 10.0, segments: 48 }));
+        assert_eq!(cylinder.scaled([2.0, 1.0, 1.0]), None);
+
+        let sphere = Primitive::Sphere { radius: 10.0, segments: 48 };
+        assert_eq!(sphere.scaled([2.0, 2.0, 2.0]), Some(Primitive::Sphere { radius: 20.0, segments: 48 }));
+        assert_eq!(sphere.scaled([2.0, 2.0, 1.0]), None);
+
+        let slot = Primitive::RoundedBox { size: [30.0, 10.0, 5.0], radius: 5.0, segments: 48 };
+        assert_eq!(slot.scaled([2.0, 2.0, 1.0]), Some(Primitive::RoundedBox { size: [60.0, 20.0, 5.0], radius: 10.0, segments: 48 }));
+        assert_eq!(slot.scaled([2.0, 1.0, 1.0]), None);
     }
 
     #[test]
