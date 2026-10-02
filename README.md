@@ -17,16 +17,23 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
   en z = 0.
 - **Deshacer y rehacer** cualquier cambio (Ctrl+Z / Ctrl+Y).
 - **Objetos**: abrir varios STL, mostrar u ocultar, cambiar el color, renombrar,
-  clonar, exportar a STL y eliminar.
+  clonar (también en matriz de columnas × filas), exportar a STL y eliminar.
 - **Selección** con un clic en la vista 3D.
 - **Herramientas** (una activa a la vez):
-  - **Mover** y **Rotar** con un manipulador por eje.
+  - **Mover**, **Rotar** y **Escalar** con un manipulador por eje. Escalar también
+    admite porcentaje o medida objetivo, con o sin escala uniforme.
   - **Corte** con un plano que se desplaza e inclina gráficamente. Las dos mitades
     quedan cerradas.
   - **Booleana**: unión, resta e intersección entre dos objetos.
   - **Apoyar en cara**: resalta las caras planas estables. Al hacer clic en una, la
     pieza queda apoyada en el suelo y alineada con los ejes.
-- **Primitivas** paramétricas cuyas dimensiones se pueden editar después de crearlas.
+  - **Medir**: distancia a lo largo de un eje, con snap a centros de agujeros,
+    esquinas y aristas.
+  - **Regla**: marcas a intervalos regulares, a las que se enganchan los objetos y el
+    plano de corte al moverlos.
+- **Primitivas** paramétricas (cubo, esfera, cilindro, cono, tubo y caja redondeada)
+  cuyas dimensiones se pueden editar después de crearlas.
+- **Interfaz en español o inglés**, según el idioma del sistema o elegida en el panel.
 - **Diagnóstico y reparación de mallas**: indica si la malla es cerrada (condición
   necesaria para cortes y booleanas) o tiene normales invertidas. *Reparar malla*
   suelda vértices, quita triángulos duplicados, orienta las caras, cierra agujeros y
@@ -102,6 +109,7 @@ mallas.
 
 - [Guía de uso](docs/guia-de-uso.md): cada herramienta paso a paso.
 - [Arquitectura](docs/arquitectura.md): módulos, flujo de un cuadro y algoritmos.
+- [Cambios](CHANGELOG.md): novedades de cada versión.
 
 ## Dependencias principales
 
