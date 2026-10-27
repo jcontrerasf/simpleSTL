@@ -1,5 +1,14 @@
 # Cambios
 
+## [Sin publicar]
+
+### Nuevo
+
+- **Exportar sección (Corte):** el contorno donde el plano de corte cruza el objeto se
+  ve en el visor y se guarda en SVG o DXF (mm, esquina en el origen). Con *Varias
+  secciones* se exportan capas paralelas cada N mm, una por archivo. Funciona también
+  con mallas abiertas.
+
 ## [0.2.0] - 2026-10-01
 
 ### Nuevo

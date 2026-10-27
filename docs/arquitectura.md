@@ -18,6 +18,7 @@ primitivas).
 | `src/viewcube.rs` | Cubo de navegación dibujado con egui |
 | `src/toolbar.rs` | `Tool` y la barra superior |
 | `src/snap.rs` | Rasgos de una malla (aristas vivas, esquinas, centros de arcos) y snap del cursor |
+| `src/section.rs` | Contorno de la sección por un plano (intersección triángulo–plano), su proyección 2D y escritura en SVG y DXF |
 | `src/measure.rs` | Ejes, medición, reglas, enganche a sus marcas y su dibujo sobre el visor |
 | `src/history.rs` | `History<T>`: pilas de deshacer y rehacer con límite |
 | `src/i18n.rs` | Idioma de la interfaz (español/inglés): detección y `tr(es, en)` |

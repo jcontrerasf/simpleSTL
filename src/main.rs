@@ -12,6 +12,7 @@ mod mesh;
 mod place_on_face;
 mod primitives;
 mod repair;
+mod section;
 mod snap;
 mod toolbar;
 mod viewcube;
@@ -34,6 +35,7 @@ use measure::{Axis, Measurement, Ruler};
 use mesh::{MeshData, Topology};
 use place_on_face::{Facet, Facets};
 use primitives::Primitive;
+use section::Polyline;
 use snap::{Features, Snap};
 use toolbar::Tool;
 
@@ -183,6 +185,18 @@ struct App {
     scale_locked: bool,
     /// Clonar en matriz abierto en el panel (para el objeto seleccionado).
     array: Option<ArrayParams>,
+    /// Exportar secciones paralelas cada `section_step` mm en vez de solo la del plano.
+    section_multi: bool,
+    section_step: f32,
+    /// Contorno del plano de corte sobre el objeto, para la vista previa.
+    section_preview: Option<SectionPreview>,
+}
+
+/// Contorno de la sección en el plano de corte, recalculado solo si cambia el plano, el
+/// objeto o su pose.
+struct SectionPreview {
+    key: (usize, *const MeshData, Pose, Pose),
+    loops: Vec<Polyline>,
 }
 
 /// Parámetros de "Clonar en matriz": copias en columnas (X) × filas (Y), separadas por un
@@ -665,6 +679,87 @@ impl App {
         }
     }
 
+    /// Recalcula el contorno de la vista previa si cambió el plano, el objeto o su pose.
+    fn update_section_preview(&mut self, plane: Option<&CutPlane>) {
+        let Some(plane) = plane else {
+            self.section_preview = None;
+            return;
+        };
+        let obj = &self.objects[plane.object];
+        let key = (plane.object, Arc::as_ptr(&obj.mesh), obj.pose, self.cut_pose);
+        if self.section_preview.as_ref().is_some_and(|p| p.key == key) {
+            return;
+        }
+        let n = self.cut_pose.rotation * vec3(0.0, 0.0, 1.0);
+        let loops = section::slice(&obj.world_mesh(), n, n.dot(self.cut_pose.translation));
+        self.section_preview = Some(SectionPreview { key, loops });
+    }
+
+    /// Desplazamientos (a lo largo de la normal del plano de corte) de las secciones a
+    /// exportar: la del plano, o todas las paralelas cada `section_step` sobre el objeto.
+    fn section_offsets(&self, object: usize) -> Vec<f32> {
+        let n = self.cut_pose.rotation * vec3(0.0, 0.0, 1.0);
+        let current = n.dot(self.cut_pose.translation);
+        if !self.section_multi {
+            return vec![current];
+        }
+        let (lo, hi) = normal_range(self.objects[object].world_bbox, n);
+        section::offsets(lo, hi, current, self.section_step)
+    }
+
+    /// Exporta el contorno del plano de corte (o las secciones paralelas) a SVG o DXF, en
+    /// mm y en los ejes del plano, con la esquina de la caja de todas las secciones en (0, 0).
+    fn export_section(&mut self) {
+        let Some(plane) = self.cut_plane() else { return };
+        let obj = &self.objects[plane.object];
+        let rotation = self.cut_pose.rotation;
+        let (n, u, v) = (rotation * vec3(0.0, 0.0, 1.0), rotation * vec3(1.0, 0.0, 0.0), rotation * vec3(0.0, 1.0, 0.0));
+        let mesh = obj.world_mesh();
+        let default_name = format!("{}_{}.svg", obj.name.trim_end_matches(".stl"), tr("seccion", "section"));
+        let sections: Vec<_> = self
+            .section_offsets(plane.object)
+            .into_iter()
+            .map(|d| section::project(&section::slice(&mesh, n, d), u, v))
+            .filter(|loops| !loops.is_empty())
+            .collect();
+        let Some((min, max)) = section::bounds(sections.iter().flatten()) else {
+            self.status = tr("El plano no atraviesa el objeto", "The plane does not cross the object").into();
+            return;
+        };
+        let Some(mut path) = rfd::FileDialog::new()
+            .set_title(tr("Exportar sección", "Export section"))
+            .add_filter("SVG", &["svg"])
+            .add_filter("DXF", &["dxf"])
+            .set_file_name(default_name)
+            .save_file()
+        else {
+            return;
+        };
+        let dxf = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dxf"));
+        if !dxf && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) {
+            path.as_mut_os_string().push(".svg");
+        }
+        // Varias secciones: una por archivo, numeradas, todas con el mismo origen.
+        let paths: Vec<PathBuf> = if sections.len() == 1 {
+            vec![path.clone()]
+        } else {
+            let (stem, ext) = (path.file_stem().unwrap_or_default().to_string_lossy(), if dxf { "dxf" } else { "svg" });
+            let width = sections.len().to_string().len().max(2);
+            (1..=sections.len()).map(|k| path.with_file_name(format!("{stem}_{k:0width$}.{ext}"))).collect()
+        };
+        for (loops, path) in sections.iter().zip(&paths) {
+            let text = if dxf { section::to_dxf(loops, min) } else { section::to_svg(loops, min, max) };
+            if let Err(e) = std::fs::write(path, text) {
+                self.status = format!("{} {}: {e}", tr("Error al exportar", "Export failed"), path.display());
+                return;
+            }
+        }
+        self.status = match paths.len() {
+            1 => format!("{} {}", tr("Exportado", "Exported"), path.display()),
+            k => format!("{k} {} {}", tr("secciones exportadas en", "sections exported to"), path.parent().unwrap_or(Path::new("")).display()),
+        };
+    }
+
     fn snapshot(&self) -> SceneState {
         let objects = self
             .objects
@@ -804,6 +899,7 @@ struct UiActions {
     pose: Option<(usize, Pose)>,
     boolean: bool,
     cut: bool,
+    export_section: bool,
     add_primitive: Option<Primitive>,
     clone: Option<usize>,
     resize: Option<(usize, Primitive)>,
@@ -874,6 +970,9 @@ fn main() {
         snapped_marks: Vec::new(),
         scale_locked: true,
         array: None,
+        section_multi: false,
+        section_step: 3.0,
+        section_preview: None,
     };
     for arg in std::env::args_os().skip(1) {
         app.load(&PathBuf::from(arg));
@@ -1125,10 +1224,14 @@ fn main() {
                 app.apply_cut(plane);
             }
         }
+        if actions.export_section {
+            app.export_section();
+        }
         if app.tool != tool_before || app.selected != selected_before {
             app.on_tool_or_selection_changed();
         }
         let cut_plane = app.cut_plane();
+        app.update_section_preview(cut_plane.as_ref());
 
         // El encuadre inicial espera a que el panel tenga su ancho real (no existe en el primer cuadro).
         if actions.fit || (needs_fit && viewport.x > 0) {
@@ -1261,6 +1364,19 @@ fn draw_overlays(ctx: &egui::Context, camera: &Camera, view: egui::Rect, dpr: f3
             for (a, b) in (0..8).flat_map(|a| [1, 2, 4].map(|bit| (a, a | bit))).filter(|(a, b)| a != b) {
                 if let (Some(pa), Some(pb)) = (project(corner(a)), project(corner(b))) {
                     painter.line_segment([pa, pb], stroke);
+                }
+            }
+        }
+    }
+    // Contorno de la sección en el plano de corte.
+    if let Some(preview) = &app.section_preview {
+        let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 220, 60));
+        for line in &preview.loops {
+            let n = line.points.len();
+            let segments = if line.closed { n } else { n.saturating_sub(1) };
+            for k in 0..segments {
+                if let (Some(a), Some(b)) = (project(line.points[k]), project(line.points[(k + 1) % n])) {
+                    painter.line_segment([a, b], stroke);
                 }
             }
         }
@@ -1864,7 +1980,7 @@ fn ruler_section(ui: &mut egui::Ui, app: &mut App) {
 fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usize) {
     let obj = &app.objects[i];
     let closed = obj.topology.is_closed();
-    let (min, max) = obj.world_bbox;
+    let bbox = obj.world_bbox;
 
     ui.horizontal(|ui| {
         ui.label(tr("Orientar", "Orient"));
@@ -1880,11 +1996,8 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
         }
     });
 
-    // Rango del desplazamiento: proyección de las esquinas de la caja sobre la normal.
     let n = app.cut_pose.rotation * vec3(0.0, 0.0, 1.0);
-    let (lo, hi) = (0..8)
-        .map(|k| vec3(if k & 1 == 0 { min.x } else { max.x }, if k & 2 == 0 { min.y } else { max.y }, if k & 4 == 0 { min.z } else { max.z }))
-        .fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(n.dot(c)), hi.max(n.dot(c))));
+    let (lo, hi) = normal_range(bbox, n);
     let current = n.dot(app.cut_pose.translation);
     let mut offset = current;
     ui.horizontal(|ui| {
@@ -1906,6 +2019,33 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
     }
     let button = ui.add_enabled(closed, egui::Button::new(tr("Cortar", "Cut")));
     actions.cut = button.on_disabled_hover_text(tr("La malla debe ser cerrada", "The mesh must be closed")).clicked();
+
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut app.section_multi, tr("Varias secciones, cada", "Multiple sections, every"));
+        let step = egui::DragValue::new(&mut app.section_step).range(0.1..=(hi - lo).max(0.1)).speed(0.1).max_decimals(2).suffix(" mm");
+        ui.add_enabled(app.section_multi, step);
+    });
+    let count = app.section_offsets(i).len();
+    let has_section = app.section_preview.as_ref().is_some_and(|p| !p.loops.is_empty());
+    let (label, enabled) = if app.section_multi {
+        (format!("{} ({count})…", tr("Exportar secciones", "Export sections")), count > 0)
+    } else {
+        (format!("{}…", tr("Exportar sección", "Export section")), has_section)
+    };
+    let button = ui.add_enabled(enabled, egui::Button::new(label));
+    actions.export_section = button.on_disabled_hover_text(tr("El plano no atraviesa el objeto", "The plane does not cross the object")).clicked();
+    ui.weak(tr(
+        "Guarda el contorno de la sección en SVG o DXF (mm, en los ejes del plano). Varias secciones van en archivos numerados.",
+        "Saves the section outline as SVG or DXF (mm, in the plane's axes). Multiple sections go to numbered files.",
+    ));
+}
+
+/// Rango de `n · p` sobre la caja `bbox`: la proyección de sus esquinas sobre la normal.
+fn normal_range((min, max): (Vec3, Vec3), n: Vec3) -> (f32, f32) {
+    (0..8)
+        .map(|k| vec3(if k & 1 == 0 { min.x } else { max.x }, if k & 2 == 0 { min.y } else { max.y }, if k & 4 == 0 { min.z } else { max.z }))
+        .fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(n.dot(c)), hi.max(n.dot(c))))
 }
 
 #[cfg(test)]

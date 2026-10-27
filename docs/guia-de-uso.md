@@ -193,6 +193,22 @@ En el panel:
 - *Cortar* crea dos objetos, `nombre (+)` y `nombre (−)`, ambos cerrados, y oculta
   el original.
 
+#### Exportar la sección
+
+Mientras la herramienta está activa, el contorno donde el plano cruza el objeto se
+dibuja en amarillo. *Exportar sección…* lo guarda como dibujo 2D, sin cortar nada:
+
+- el formato sale de la extensión elegida: **SVG** o **DXF** (R12);
+- las medidas van en mm, en los ejes del plano; la esquina inferior izquierda del
+  contorno queda en (0, 0);
+- funciona también con mallas abiertas: sus contornos se exportan como polilíneas
+  abiertas.
+
+Con *Varias secciones, cada N mm* se exportan secciones paralelas a lo largo de todo
+el objeto, alineadas con la posición del plano (por ejemplo, capas para cortar en
+láser). Van en archivos numerados (`pieza_seccion_01.svg`, `_02`, …) con el mismo
+origen, así que calzan al superponerlos.
+
 ### Booleana (B)
 
 - **A** parte como el objeto seleccionado y **B** como otro objeto; ambos se pueden cambiar en las listas.
