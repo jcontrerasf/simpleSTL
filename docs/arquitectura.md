@@ -8,7 +8,7 @@ primitivas).
 
 | Archivo | Responsabilidad |
 |---|---|
-| `src/main.rs` | Estado de la aplicación (`App`, `SceneObject`), ciclo de dibujo, panel lateral |
+| `src/main.rs` | Estado de la aplicación (`App`, `SceneObject`), ciclo de dibujo, barra superior y panel lateral |
 | `src/mesh.rs` | `MeshData`: malla indexada independiente del renderer. Lectura y escritura de STL, topología, volumen, centroide |
 | `src/csg.rs` | Puente con Manifold: booleanas, `split` por plano, envolvente convexa, primitivas |
 | `src/primitives.rs` | `Primitive`: parámetros de cubo, esfera, cilindro y cono, y su malla |
@@ -16,7 +16,9 @@ primitivas).
 | `src/manipulator.rs` | `Pose` y el manipulador 3D (transform-gizmo) alimentado con eventos de three-d |
 | `src/camera.rs` | Cámara tornamesa (azimut y elevación), desplazamiento, zoom, encuadre y transiciones animadas |
 | `src/viewcube.rs` | Cubo de navegación dibujado con egui |
-| `src/toolbar.rs` | `Tool` y la barra superior |
+| `src/toolbar.rs` | `Tool` y sus botones en la barra superior |
+| `src/theme.rs` | Aspecto: paleta oscura, fuentes Inter y Phosphor, botones con ícono (igual que en paint1) |
+| `src/icons.rs` | Códigos de los íconos de Phosphor |
 | `src/snap.rs` | Rasgos de una malla (aristas vivas, esquinas, centros de arcos) y snap del cursor |
 | `src/section.rs` | Contorno de la sección por un plano (intersección triángulo–plano), su proyección 2D y escritura en SVG y DXF |
 | `src/measure.rs` | Ejes, medición, reglas, enganche a sus marcas y su dibujo sobre el visor |
@@ -53,13 +55,12 @@ vértices compartidos, que Manifold necesita para reconocer una malla cerrada.
 
 `window.render_loop` en `main.rs`, en orden:
 
-1. **Viewport**: el visor ocupa lo que deja libre el panel lateral, de ancho fijo
-   300 px.
+1. **Viewport**: el visor ocupa lo que dejan libre la barra superior (44 px de alto)
+   y el panel lateral (300 px de ancho), ambos de tamaño fijo.
 2. **`Manipulator::track_input`**: lee el ratón **antes** de que egui marque
    eventos como consumidos.
-3. **`gui.update`**: dibuja el panel lateral, el cubo de vista, la barra de
-   herramientas y el manipulador. El cubo y la barra se registran como zonas
-   bloqueadas.
+3. **`gui.update`**: dibuja la barra superior, el panel lateral, el cubo de vista y el
+   manipulador. El cubo y su botón de proyección se registran como zonas bloqueadas.
 4. **Aplicar resultados**:
    - la nueva pose del objeto o del plano de corte, según la herramienta;
    - los atajos de teclado;

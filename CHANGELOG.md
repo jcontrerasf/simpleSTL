@@ -9,6 +9,14 @@
   secciones* se exportan capas paralelas cada N mm, una por archivo. Funciona también
   con mallas abiertas.
 
+### Cambios
+
+- **Interfaz renovada, con el estilo de paint1:** tema oscuro con acento azul, fuente
+  Inter e íconos de Phosphor. Una barra superior de lado a lado reúne *Abrir STL…*,
+  *Primitivas*, *Deshacer*/*Rehacer*, las herramientas (ahora como íconos, con nombre y
+  atajo en el tooltip), *Encuadrar*, *Exportar STL…* y el menú ☰ con el idioma, que
+  antes estaba al pie del panel lateral.
+
 ## [0.2.0] - 2026-10-01
 
 ### Nuevo

@@ -1,11 +1,12 @@
-//! Barra superior de herramientas (estilo PrusaSlicer): deja activa una sola herramienta a
-//! la vez y sus opciones van en el panel lateral. Las que actúan sobre un objeto se
+//! Herramientas de la barra superior (estilo PrusaSlicer): deja activa una sola a la vez y
+//! sus opciones van en el panel lateral. Las que actúan sobre un objeto se
 //! desactivan sin selección; Medir y Regla siempre están disponibles.
 
 use three_d::Key;
-use three_d::egui::{self, Rect};
+use three_d::egui;
 
 use crate::i18n::tr;
+use crate::{icons, theme};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tool {
@@ -41,6 +42,19 @@ impl Tool {
         }
     }
 
+    pub fn icon(self) -> &'static str {
+        match self {
+            Tool::Move => icons::MOVE,
+            Tool::Rotate => icons::ROTATE,
+            Tool::Scale => icons::SCALE,
+            Tool::Cut => icons::CUT,
+            Tool::Boolean => icons::BOOLEAN,
+            Tool::PlaceOnFace => icons::PLACE_ON_FACE,
+            Tool::Measure => icons::MEASURE,
+            Tool::Ruler => icons::RULER,
+        }
+    }
+
     pub fn key(self) -> Key {
         match self {
             Tool::Move => Key::M,
@@ -68,34 +82,19 @@ impl Tool {
     }
 }
 
-/// Dibuja la barra en la esquina superior izquierda del visor, sin pasar de `max_width`
-/// (si no cabe, los botones pasan a una segunda fila). Pulsar la herramienta activa la
-/// desactiva. Devuelve el área ocupada, para que no cuente como clic en la escena.
-pub fn show(ctx: &egui::Context, view: Rect, max_width: f32, has_selection: bool, active: &mut Option<Tool>) -> Rect {
-    egui::Area::new(egui::Id::new("toolbar"))
-        .fixed_pos(view.min + egui::vec2(8.0, 8.0))
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style()).show(ui, |ui| {
-                ui.set_max_width(max_width);
-                ui.horizontal_wrapped(|ui| {
-                    for tool in Tool::ALL {
-                        if tool == Tool::Measure {
-                            ui.separator();
-                        }
-                        let selected = *active == Some(tool);
-                        let enabled = has_selection || !tool.needs_object();
-                        let response = ui
-                            .add_enabled(enabled, egui::Button::selectable(selected, tool.label()))
-                            .on_hover_text(format!("{} ({})", tool.label(), tool.shortcut()))
-                            .on_disabled_hover_text(tr("Selecciona un objeto", "Select an object"));
-                        if response.clicked() {
-                            *active = if selected { None } else { Some(tool) };
-                        }
-                    }
-                });
-            });
-        })
-        .response
-        .rect
+/// Botones de las herramientas, uno por ícono; el nombre y el atajo van en el tooltip.
+/// Pulsar la herramienta activa la desactiva.
+pub fn tools(ui: &mut egui::Ui, has_selection: bool, active: &mut Option<Tool>) {
+    for tool in Tool::ALL {
+        if tool == Tool::Measure {
+            ui.separator();
+        }
+        let selected = *active == Some(tool);
+        let enabled = has_selection || !tool.needs_object();
+        let response = theme::toggle(ui, enabled, selected, tool.icon(), &format!("{} ({})", tool.label(), tool.shortcut()))
+            .on_disabled_hover_text(format!("{} · {}", tool.label(), tr("Selecciona un objeto", "Select an object")));
+        if response.clicked() {
+            *active = if selected { None } else { Some(tool) };
+        }
+    }
 }

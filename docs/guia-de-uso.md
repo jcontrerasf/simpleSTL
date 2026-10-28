@@ -2,14 +2,22 @@
 
 ## La ventana
 
+- **Barra superior**, de izquierda a derecha:
+  - *Abrir STL…* y *Primitivas*;
+  - *Deshacer* y *Rehacer*;
+  - las herramientas (ver [Herramientas](#herramientas));
+  - *Encuadrar*;
+  - a la derecha, *Exportar STL…* (el objeto seleccionado) y el menú ☰, con el
+    idioma.
+
+  Los botones son íconos; al dejar el cursor encima se ve el nombre y el atajo. En
+  una ventana angosta, *Exportar STL…* queda solo con su ícono.
 - **Panel izquierdo**:
-  - arriba, los botones *Abrir STL…*, *Primitivas* y *Encuadrar*;
-  - luego, la lista de objetos y la información del seleccionado;
+  - la lista de objetos y la información del seleccionado;
   - debajo, las opciones de la herramienta activa;
   - al pie, el último mensaje de estado, el aviso de que todas las medidas están en
-    mm, el espaciado de la grilla y el selector de idioma.
+    mm y el espaciado de la grilla.
 - **Visor 3D**:
-  - arriba a la izquierda, la barra de herramientas;
   - arriba a la derecha, el cubo de vista;
   - la base translúcida en z = 0 marca el "suelo".
 
@@ -17,8 +25,8 @@
 
 La interfaz está en español o en inglés. Al iniciar se elige según el idioma del
 sistema (las variables `LANGUAGE`, `LC_ALL`, `LC_MESSAGES` y `LANG` en Linux): español
-si es alguna variante de español, inglés en cualquier otro caso. El selector al pie del
-panel lo cambia durante la sesión; la elección no se guarda.
+si es alguna variante de español, inglés en cualquier otro caso. El menú ☰ de la barra
+superior lo cambia durante la sesión; la elección no se guarda.
 
 ## Navegar
 
@@ -59,7 +67,7 @@ Cada fila de la lista tiene:
 - **Color**: clic para cambiarlo.
 - **Nombre**: un clic lo selecciona y un doble clic lo renombra. Enter o hacer clic
   afuera confirma y Esc cancela.
-- **…** (o clic derecho sobre el nombre): *Renombrar*, *Clonar*, *Clonar en matriz…*,
+- **⋯** (o clic derecho sobre el nombre): *Renombrar*, *Clonar*, *Clonar en matriz…*,
   *Exportar STL…* y *Eliminar* (también con la tecla **Supr** sobre el objeto
   seleccionado).
 

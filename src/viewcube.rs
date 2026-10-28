@@ -8,6 +8,7 @@ use three_d::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, Vec2};
 use three_d::{Camera, InnerSpace, Vec3};
 
 use crate::i18n::tr;
+use crate::icons;
 
 struct Face {
     normal: Vec3,
@@ -177,7 +178,11 @@ pub fn projection_button(ctx: &egui::Context, cube: Rect, orthographic: &mut boo
         .fixed_pos(cube.left_bottom() + Vec2::new(0.0, 4.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            let text = if *orthographic { tr("Ortogonal", "Orthographic") } else { tr("Perspectiva", "Perspective") };
+            let text = if *orthographic {
+                format!("{}  {}", icons::ORTHOGRAPHIC, tr("Ortogonal", "Orthographic"))
+            } else {
+                format!("{}  {}", icons::PERSPECTIVE, tr("Perspectiva", "Perspective"))
+            };
             let button = egui::Button::new(text).min_size(Vec2::new(cube.width(), 0.0));
             if ui.add(button).on_hover_text(tr("Alternar proyección (O)", "Toggle projection (O)")).clicked() {
                 *orthographic = !*orthographic;

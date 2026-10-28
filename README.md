@@ -1,12 +1,16 @@
-# simpleSTL
+<p align="center">
+  <img src="packaging/simplestl.svg" alt="" width="96">
+</p>
+
+<h1 align="center">simpleSTL</h1>
 
 Visor y editor sencillo de archivos STL escrito en Rust. Permite cargar varias
 piezas, moverlas y rotarlas, cortarlas con un plano, combinarlas con operaciones
 booleanas, apoyarlas sobre una de sus caras y crear primitivas (cubo, esfera,
 cilindro, cono).
 
-La interfaz está inspirada en PrusaSlicer y FreeCAD: una barra de herramientas
-sobre el visor, un cubo de navegación y un panel lateral con la lista de objetos.
+La interfaz está inspirada en PrusaSlicer y FreeCAD: una barra superior con las
+herramientas, un cubo de navegación y un panel lateral con la lista de objetos.
 
 ![Captura de simpleSTL](docs/images/screenshot.png)
 
@@ -33,7 +37,7 @@ sobre el visor, un cubo de navegación y un panel lateral con la lista de objeto
     plano de corte al moverlos.
 - **Primitivas** paramétricas (cubo, esfera, cilindro, cono, tubo y caja redondeada)
   cuyas dimensiones se pueden editar después de crearlas.
-- **Interfaz en español o inglés**, según el idioma del sistema o elegida en el panel.
+- **Interfaz en español o inglés**, según el idioma del sistema o elegida en el menú ☰.
 - **Diagnóstico y reparación de mallas**: indica si la malla es cerrada (condición
   necesaria para cortes y booleanas) o tiene normales invertidas. *Reparar malla*
   suelda vértices, quita triángulos duplicados, orienta las caras, cierra agujeros y
@@ -121,3 +125,6 @@ mallas.
 | [transform-gizmo-egui](https://crates.io/crates/transform-gizmo-egui) 0.9 | Manipulador 3D |
 | [stl_io](https://crates.io/crates/stl_io) 0.11 | Lectura y escritura de STL |
 | [rfd](https://crates.io/crates/rfd) 0.17 | Diálogos de archivo |
+
+Fuentes incrustadas (ver [`assets/fonts`](assets/fonts/README-es.md)): [Inter](https://rsms.me/inter)
+(OFL) y los íconos [Phosphor](https://phosphoricons.com) (MIT).

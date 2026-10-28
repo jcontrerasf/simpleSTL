@@ -6,6 +6,7 @@ mod csg;
 mod ground;
 mod history;
 mod i18n;
+mod icons;
 mod manipulator;
 mod measure;
 mod mesh;
@@ -14,6 +15,7 @@ mod primitives;
 mod repair;
 mod section;
 mod snap;
+mod theme;
 mod toolbar;
 mod viewcube;
 
@@ -37,6 +39,7 @@ use place_on_face::{Facet, Facets};
 use primitives::Primitive;
 use section::Polyline;
 use snap::{Features, Snap};
+use theme::pal;
 use toolbar::Tool;
 
 const PALETTE: [[u8; 3]; 6] = [
@@ -894,6 +897,8 @@ impl App {
 struct UiActions {
     open: bool,
     fit: bool,
+    undo: bool,
+    redo: bool,
     delete: Option<usize>,
     export: Option<usize>,
     pose: Option<(usize, Pose)>,
@@ -927,6 +932,11 @@ fn main() {
     let mut control = CameraController::new(vec3(0.0, 0.0, 0.0));
     let mut camera = control.new_camera(window.viewport());
     let mut gui = GUI::new(&context);
+    theme::install(gui.context());
+    let logo = icon_rgba().map(|(rgba, width, height)| {
+        let image = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
+        gui.context().load_texture("logo", image, egui::TextureOptions::LINEAR)
+    });
 
     let ambient = AmbientLight::new(&context, 0.35, Srgba::WHITE);
     let key = DirectionalLight::new(&context, 2.0, Srgba::WHITE, vec3(-1.0, 1.0, -2.0));
@@ -984,6 +994,7 @@ fn main() {
     let mut extra_frames: u32 = 3;
     let mut manipulator = Manipulator::new();
     let mut panel_width = 0.0f32;
+    let mut top_height = 0.0f32;
 
     window.render_loop(move |mut frame_input| {
         if !frame_input.events.is_empty() {
@@ -993,13 +1004,16 @@ fn main() {
         let window_viewport = frame_input.viewport;
         let dpr = frame_input.device_pixel_ratio;
 
-        // El visor 3D ocupa lo que deja libre el panel lateral (ancho del cuadro anterior).
+        // El visor 3D ocupa lo que dejan libre la barra superior y el panel lateral (medidas
+        // del cuadro anterior). En three-d el origen está abajo, así que la barra solo le
+        // quita alto.
         let panel_px = (panel_width * dpr) as u32;
+        let top_px = (top_height * dpr) as u32;
         let viewport = Viewport {
             x: panel_px as i32,
             y: 0,
             width: window_viewport.width.saturating_sub(panel_px).max(1),
-            height: window_viewport.height,
+            height: window_viewport.height.saturating_sub(top_px).max(1),
         };
         camera.set_viewport(viewport);
 
@@ -1018,6 +1032,12 @@ fn main() {
             window_viewport,
             dpr,
             |ui| {
+                top_height = egui::Panel::top("top_bar")
+                    .exact_size(44.0)
+                    .show_inside(ui, |ui| top_bar(ui, &mut app, logo.as_ref(), &mut actions))
+                    .response
+                    .rect
+                    .height();
                 panel_width = egui::Panel::left("panel")
                     // Ancho fijo: si se ajusta al contenido, el visor cambia de tamaño entre cuadros.
                     .exact_size(300.0)
@@ -1026,17 +1046,13 @@ fn main() {
                     .rect
                     .width();
                 let view_rect = egui::Rect::from_min_max(
-                    egui::pos2(panel_width, 0.0),
+                    egui::pos2(panel_width, top_height),
                     egui::pos2(window_viewport.width as f32 / dpr, window_viewport.height as f32 / dpr),
                 );
                 let cube_rect = viewcube::rect(view_rect);
                 cube_action = viewcube::show(ui.ctx(), cube_rect, &camera);
                 blocked.push(cube_rect);
                 blocked.push(viewcube::projection_button(ui.ctx(), cube_rect, &mut orthographic));
-                // La barra usa el ancho libre a la izquierda del cubo de vista.
-                let max_width = (cube_rect.min.x - view_rect.min.x - 32.0).max(120.0);
-                let has_selection = app.selected.is_some();
-                blocked.push(toolbar::show(ui.ctx(), view_rect, max_width, has_selection, &mut app.tool));
                 draw_overlays(ui.ctx(), &camera, view_rect, dpr, window_viewport.height, &app);
                 dragged_pose = manipulator.update(ui.ctx(), &camera, view_rect, &blocked, gizmo_target(&app));
                 // Menús y listas desplegables pueden quedar sobre el visor: un clic en ellos no
@@ -1097,6 +1113,12 @@ fn main() {
                 _ => *handled = false,
             }
         }
+        if actions.undo {
+            app.undo();
+        }
+        if actions.redo {
+            app.redo();
+        }
         if let Some((i, pose)) = actions.pose {
             app.objects[i].set_pose(pose);
         }
@@ -1111,7 +1133,7 @@ fn main() {
         // Posición física (three-d) en el visor libre de controles, si corresponde.
         let in_scene = |p: PhysicalPoint| {
             let point = egui::pos2(p.x / dpr, (window_viewport.height as f32 - p.y) / dpr);
-            !pointer_over_ui && p.x >= viewport.x as f32 && !blocked.iter().any(|r| r.contains(point))
+            !pointer_over_ui && p.x >= viewport.x as f32 && p.y < viewport.height as f32 && !blocked.iter().any(|r| r.contains(point))
         };
 
         app.update_facets();
@@ -1284,6 +1306,12 @@ fn main() {
 /// Ícono de la ventana (barra de título y de tareas). Wayland no lo usa: allí el escritorio
 /// toma el del archivo .desktop.
 fn window_icon() -> Option<winit::window::Icon> {
+    let (rgba, width, height) = icon_rgba()?;
+    winit::window::Icon::from_rgba(rgba, width, height).ok()
+}
+
+/// Píxeles RGBA del ícono de 64 px (ventana y logo de la barra superior).
+fn icon_rgba() -> Option<(Vec<u8>, u32, u32)> {
     let decoder = png::Decoder::new(&include_bytes!("../packaging/simplestl-64.png")[..]);
     let mut reader = decoder.read_info().ok()?;
     let mut rgba = vec![0; reader.output_buffer_size()];
@@ -1292,7 +1320,7 @@ fn window_icon() -> Option<winit::window::Icon> {
         return None; // scripts/build-icons.sh lo genera como RGBA de 8 bits
     }
     rgba.truncate(frame.buffer_size());
-    winit::window::Icon::from_rgba(rgba, frame.width, frame.height).ok()
+    Some((rgba, frame.width, frame.height))
 }
 
 /// Separa el sufijo de copia " (N)" de un nombre: ("pieza", Some(2)) para "pieza (2)".
@@ -1418,6 +1446,79 @@ fn pick_facet(context: &Context, camera: &Camera, cache: &FacetCache, pixel: Phy
     pick(context, camera, pixel, geometries, Cull::None).ok().flatten().map(|h| h.geometry_id as usize)
 }
 
+/// Barra superior: logo, archivo, deshacer, herramientas y vista a la izquierda; menú y
+/// exportar a la derecha. El lado derecho se reserva primero para que no desaparezca en una
+/// ventana angosta; lo de la izquierda que no cabe se recorta.
+fn top_bar(ui: &mut egui::Ui, app: &mut App, logo: Option<&egui::TextureHandle>, actions: &mut UiActions) {
+    // En una ventana angosta, Exportar queda solo con su ícono y el nombre se oculta, para
+    // que quepan todas las herramientas.
+    let narrow = ui.available_width() < 1000.0;
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.menu_button(theme::icon(icons::MENU, false), main_menu);
+        let label = if narrow { "" } else { tr("Exportar STL…", "Export STL…") };
+        let export = theme::primary_button(ui, app.selected.is_some(), icons::EXPORT, label)
+            .on_hover_text(tr("Exportar STL… (el objeto seleccionado)", "Export STL… (the selected object)"))
+            .on_disabled_hover_text(tr("Selecciona un objeto", "Select an object"));
+        if export.clicked() {
+            actions.export = app.selected;
+        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.shrink_clip_rect(ui.max_rect());
+            ui.spacing_mut().item_spacing.x = 4.0;
+            if let Some(logo) = logo {
+                ui.add(egui::Image::new(logo).fit_to_exact_size(egui::vec2(24.0, 24.0)));
+            }
+            if !narrow {
+                ui.label(theme::strong("simpleSTL"));
+            }
+            ui.separator();
+            actions.open = theme::icon_button(ui, icons::OPEN, tr("Abrir STL…", "Open STL…")).clicked();
+            ui.menu_button(theme::icon(icons::PRIMITIVES, false), |ui| {
+                for primitive in Primitive::DEFAULTS {
+                    if ui.button(format!("{}  {}", primitive_icon(&primitive), primitive.label())).clicked() {
+                        actions.add_primitive = Some(primitive);
+                        ui.close();
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tr("Agregar primitiva", "Add primitive"));
+            ui.separator();
+            let undo = format!("{} (Ctrl+Z)", tr("Deshacer", "Undo"));
+            actions.undo = theme::icon_button_if(ui, app.history.can_undo(), icons::UNDO, &undo).clicked();
+            let redo = format!("{} (Ctrl+Y)", tr("Rehacer", "Redo"));
+            actions.redo = theme::icon_button_if(ui, app.history.can_redo(), icons::REDO, &redo).clicked();
+            ui.separator();
+            toolbar::tools(ui, app.selected.is_some(), &mut app.tool);
+            ui.separator();
+            actions.fit = theme::icon_button(ui, icons::FIT, tr("Encuadrar", "Fit view")).clicked();
+        });
+    });
+}
+
+/// Menú ☰ de la barra superior.
+fn main_menu(ui: &mut egui::Ui) {
+    ui.menu_button(format!("{}  {}", icons::LANGUAGE, tr("Idioma", "Language")), |ui| {
+        // El cambio se ve en el siguiente cuadro.
+        for lang in Lang::ALL {
+            if ui.radio(i18n::current() == lang, lang.name()).clicked() {
+                i18n::set(lang);
+            }
+        }
+    });
+}
+
+fn primitive_icon(primitive: &Primitive) -> &'static str {
+    match primitive {
+        Primitive::Box { .. } => icons::BOX,
+        Primitive::Sphere { .. } => icons::SPHERE,
+        Primitive::Cylinder { .. } => icons::CYLINDER,
+        Primitive::Cone { .. } => icons::CONE,
+        Primitive::Tube { .. } => icons::TUBE,
+        Primitive::RoundedBox { .. } => icons::ROUNDED_BOX,
+    }
+}
+
 fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     if app.objects.len() < 2 {
         ui.weak(tr("Se necesitan dos objetos", "Two objects are needed"));
@@ -1441,8 +1542,13 @@ fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     }
     ui.horizontal_wrapped(|ui| {
         for op in BooleanOp::ALL {
+            let icon = match op {
+                BooleanOp::Union => icons::UNION,
+                BooleanOp::Difference => icons::DIFFERENCE,
+                BooleanOp::Intersection => icons::INTERSECTION,
+            };
             let text = if op == BooleanOp::Difference { tr("Resta A − B", "Difference A − B") } else { op.label() };
-            ui.radio_value(&mut app.bool_op, op, text);
+            ui.selectable_value(&mut app.bool_op, op, format!("{icon}  {text}"));
         }
     });
 
@@ -1454,7 +1560,7 @@ fn boolean_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     } else {
         None
     };
-    let button = ui.add_enabled(problem.is_none(), egui::Button::new(tr("Aplicar", "Apply")));
+    let button = theme::primary_button(ui, problem.is_none(), icons::OK, tr("Aplicar", "Apply"));
     actions.boolean = button.on_disabled_hover_text(problem.unwrap_or_default()).clicked();
 }
 
@@ -1469,22 +1575,8 @@ fn side_panel(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             "Clic: seleccionar · Izq: orbitar · Der/Medio: desplazar · Rueda: zoom",
             "Click: select · Left: orbit · Right/Middle: pan · Wheel: zoom",
         ));
-        language_selector(ui);
     });
     egui::ScrollArea::vertical().show(ui, |ui| panel_contents(ui, app, actions));
-}
-
-/// Selector de idioma; el cambio se ve en el siguiente cuadro.
-fn language_selector(ui: &mut egui::Ui) {
-    let mut lang = i18n::current();
-    egui::ComboBox::from_id_salt("language").selected_text(lang.name()).show_ui(ui, |ui| {
-        for option in Lang::ALL {
-            ui.selectable_value(&mut lang, option, option.name());
-        }
-    });
-    if lang != i18n::current() {
-        i18n::set(lang);
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1499,19 +1591,20 @@ enum ObjectAction {
 /// Menú de un objeto de la lista (botón "…" o clic derecho sobre el nombre).
 fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
     let mut action = None;
-    if ui.button(tr("Renombrar", "Rename")).clicked() {
+    if ui.button(format!("{}  {}", icons::RENAME, tr("Renombrar", "Rename"))).clicked() {
         action = Some(ObjectAction::Rename);
     }
-    if ui.button(tr("Clonar (Ctrl+D)", "Clone (Ctrl+D)")).clicked() {
+    if ui.button(format!("{}  {}", icons::CLONE, tr("Clonar (Ctrl+D)", "Clone (Ctrl+D)"))).clicked() {
         action = Some(ObjectAction::Clone);
     }
-    if ui.button(tr("Clonar en matriz…", "Clone as array…")).clicked() {
+    if ui.button(format!("{}  {}", icons::ARRAY, tr("Clonar en matriz…", "Clone as array…"))).clicked() {
         action = Some(ObjectAction::Array);
     }
-    if ui.button(tr("Exportar STL…", "Export STL…")).clicked() {
+    if ui.button(format!("{}  {}", icons::EXPORT, tr("Exportar STL…", "Export STL…"))).clicked() {
         action = Some(ObjectAction::Export);
     }
-    if ui.button(tr("Eliminar", "Delete")).clicked() {
+    ui.separator();
+    if ui.button(egui::RichText::new(format!("{}  {}", icons::DELETE, tr("Eliminar", "Delete"))).color(pal().error)).clicked() {
         action = Some(ObjectAction::Delete);
     }
     if action.is_some() {
@@ -1520,58 +1613,27 @@ fn object_menu(ui: &mut egui::Ui) -> Option<ObjectAction> {
     action
 }
 
-/// Botón con forma de ojo para mostrar/ocultar; tachado cuando el objeto está oculto.
-/// Se dibuja a mano porque la fuente por defecto de egui no garantiza el emoji.
-fn eye_toggle(ui: &mut egui::Ui, visible: &mut bool) -> egui::Response {
-    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(20.0, 16.0), egui::Sense::click());
-    if response.clicked() {
+/// Ojo para mostrar u ocultar un objeto.
+fn eye_toggle(ui: &mut egui::Ui, visible: &mut bool) {
+    let (icon, help) = if *visible { (icons::VISIBLE, tr("Ocultar", "Hide")) } else { (icons::HIDDEN, tr("Mostrar", "Show")) };
+    if theme::mini(ui, *visible, icon, help).clicked() {
         *visible = !*visible;
-        response.mark_changed();
     }
-    let visuals = ui.visuals();
-    let color = if response.hovered() {
-        visuals.strong_text_color()
-    } else if *visible {
-        visuals.text_color()
-    } else {
-        visuals.weak_text_color()
-    };
-    let (c, half_w, half_h, n) = (rect.center(), 8.0, 4.5, 12);
-    let curve = |k: usize, sign: f32| {
-        let t = k as f32 / n as f32;
-        egui::pos2(c.x - half_w + 2.0 * half_w * t, c.y + sign * half_h * (std::f32::consts::PI * t).sin())
-    };
-    let mut outline: Vec<egui::Pos2> = (0..=n).map(|k| curve(k, -1.0)).collect();
-    outline.extend((1..n).rev().map(|k| curve(k, 1.0)));
-    let painter = ui.painter();
-    painter.add(egui::Shape::closed_line(outline, egui::Stroke::new(1.3_f32, color)));
-    if *visible {
-        painter.circle_filled(c, 2.3, color);
-    } else {
-        painter.line_segment([c + egui::vec2(-7.0, 6.0), c + egui::vec2(7.0, -6.0)], egui::Stroke::new(1.5_f32, color));
-    }
-    response.on_hover_text(if *visible { tr("Ocultar", "Hide") } else { tr("Mostrar", "Show") })
 }
 
 fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
-    ui.heading("simpleSTL");
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
-        actions.open = ui.button(tr("Abrir STL…", "Open STL…")).clicked();
-        ui.menu_button(tr("Primitivas", "Primitives"), |ui| {
-            for primitive in Primitive::DEFAULTS {
-                if ui.button(primitive.label()).clicked() {
-                    actions.add_primitive = Some(primitive);
-                    ui.close();
-                }
-            }
+        theme::section_title(ui, tr("Objetos", "Objects"));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(egui::RichText::new(app.objects.len().to_string()).small().color(pal().text_soft));
         });
-        actions.fit = ui.button(tr("Encuadrar", "Fit view")).clicked();
     });
-    ui.separator();
-
-    ui.label(egui::RichText::new(tr("Objetos", "Objects")).strong());
     if app.objects.is_empty() {
-        ui.weak(tr("Ninguno cargado", "None loaded"));
+        ui.weak(tr(
+            "Ninguno cargado. Abre un STL o agrega una primitiva desde la barra superior.",
+            "None loaded. Open an STL or add a primitive from the top bar.",
+        ));
     }
     for (i, obj) in app.objects.iter_mut().enumerate() {
         ui.horizontal(|ui| {
@@ -1601,9 +1663,9 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
 
             let mut menu_action = None;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button("…", |ui| menu_action = object_menu(ui));
+                ui.menu_button(egui::RichText::new(icons::MORE).size(15.0), |ui| menu_action = object_menu(ui));
                 let label = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    // Truncado al ancho libre: un nombre largo no debe tapar el botón "…".
+                    // Truncado al ancho libre: un nombre largo no debe tapar el botón de menú.
                     let button = egui::Button::selectable(app.selected == Some(i), obj.name.as_str()).truncate();
                     ui.add(button).on_hover_text(&obj.name)
                 });
@@ -1635,7 +1697,7 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
 
     if let Some(obj) = app.selected.and_then(|i| app.objects.get(i)) {
         ui.separator();
-        ui.label(egui::RichText::new(&obj.name).strong());
+        ui.label(theme::strong(&obj.name));
         let (local_min, local_max) = obj.mesh.bounding_box();
         let s = obj.pose.scale;
         let size = local_max - local_min;
@@ -1657,7 +1719,7 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             ui.label(tr("Cerrada", "Closed"));
             if !closed {
                 ui.colored_label(
-                    egui::Color32::LIGHT_RED,
+                    pal().error,
                     {
                         let (boundary, bad) = (obj.topology.boundary_edges, obj.topology.bad_edges);
                         match i18n::current() {
@@ -1667,9 +1729,9 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
                     },
                 );
             } else if inverted {
-                ui.colored_label(egui::Color32::LIGHT_RED, tr("sí, con normales invertidas", "yes, with inverted normals"));
+                ui.colored_label(pal().error, tr("sí, con normales invertidas", "yes, with inverted normals"));
             } else {
-                ui.colored_label(egui::Color32::LIGHT_GREEN, tr("sí", "yes"));
+                ui.colored_label(pal().success, tr("sí", "yes"));
             }
             ui.end_row();
             if closed {
@@ -1679,7 +1741,7 @@ fn panel_contents(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             }
         });
         if !closed || inverted {
-            let button = ui.button(tr("Reparar malla", "Repair mesh")).on_hover_text(tr(
+            let button = theme::button(ui, true, icons::REPAIR, tr("Reparar malla", "Repair mesh")).on_hover_text(tr(
                 "Suelda vértices, quita triángulos duplicados, orienta las caras y cierra agujeros",
                 "Welds vertices, removes duplicate triangles, orients faces and fills holes",
             ));
@@ -1713,7 +1775,7 @@ fn dimensions_section(ui: &mut egui::Ui, mut primitive: Primitive) -> Option<Pri
         changed |= ui.add(drag).changed();
         ui.end_row();
     };
-    ui.label(egui::RichText::new(tr("Dimensiones", "Dimensions")).strong());
+    theme::section_title(ui, tr("Dimensiones", "Dimensions"));
     let mut segments_changed = false;
     egui::Grid::new("dimensions").num_columns(2).show(ui, |ui| match &mut primitive {
         Primitive::Box { size } => {
@@ -1777,7 +1839,7 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         ));
         return;
     };
-    ui.label(egui::RichText::new(tool.label()).strong());
+    ui.label(theme::strong(format!("{}  {}", tool.icon(), tool.label())));
     match tool {
         Tool::Measure => return measure_section(ui, app),
         Tool::Ruler => return ruler_section(ui, app),
@@ -1807,7 +1869,7 @@ fn tool_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
             }
         }
         Tool::Rotate => {
-            if ui.button(tr("Restablecer rotación", "Reset rotation")).clicked() {
+            if theme::button(ui, true, icons::RESET, tr("Restablecer rotación", "Reset rotation")).clicked() {
                 actions.pose = Some((i, Pose { rotation: Pose::at(pose.translation).rotation, ..pose }));
             }
             ui.weak(tr("Arrastra los anillos. Ctrl: pasos de 15°.", "Drag the rings. Ctrl: steps of 15°."));
@@ -1874,7 +1936,7 @@ fn scale_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: u
         }
         actions.scale = Some((i, new));
     }
-    if ui.button(tr("Restablecer escala", "Reset scale")).clicked() {
+    if theme::button(ui, true, icons::RESET, tr("Restablecer escala", "Reset scale")).clicked() {
         actions.scale = Some((i, vec3(1.0, 1.0, 1.0)));
     }
     ui.weak(tr(
@@ -1886,7 +1948,7 @@ fn scale_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: u
 /// "Clonar en matriz": columnas × filas con un hueco entre piezas.
 fn array_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
     let Some(params) = app.array.as_mut() else { return };
-    ui.label(egui::RichText::new(tr("Clonar en matriz", "Clone as array")).strong());
+    ui.label(theme::strong(format!("{}  {}", icons::ARRAY, tr("Clonar en matriz", "Clone as array"))));
     egui::Grid::new("array").num_columns(2).show(ui, |ui| {
         ui.label(tr("Columnas (X)", "Columns (X)"));
         ui.add(egui::DragValue::new(&mut params.columns).range(1..=20));
@@ -1907,8 +1969,8 @@ fn array_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions) {
         Lang::En => format!("{total} pieces in total ({} new copies). The gap is the free distance between pieces.", total - 1),
     });
     ui.horizontal(|ui| {
-        actions.create_array = ui.add_enabled(total > 1, egui::Button::new(tr("Crear", "Create"))).clicked();
-        if ui.button(tr("Cancelar", "Cancel")).clicked() {
+        actions.create_array = theme::primary_button(ui, total > 1, icons::OK, tr("Crear", "Create")).clicked();
+        if theme::button(ui, true, icons::CANCEL, tr("Cancelar", "Cancel")).clicked() {
             app.array = None;
         }
     });
@@ -1967,7 +2029,7 @@ fn ruler_section(ui: &mut egui::Ui, app: &mut App) {
                 .on_hover_text(tr("Largo", "Length"));
             ui.label(tr("cada", "every"));
             ui.add(egui::DragValue::new(&mut ruler.spacing).range(measure::MIN_SPACING..=f32::MAX).speed(0.1).max_decimals(2));
-            if ui.button(tr("Quitar", "Remove")).clicked() {
+            if theme::mini(ui, true, icons::DELETE, tr("Quitar", "Remove")).clicked() {
                 remove = Some(k);
             }
         });
@@ -2017,7 +2079,7 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
             "While moving it, it snaps to the marks of the rulers it crosses.",
         ));
     }
-    let button = ui.add_enabled(closed, egui::Button::new(tr("Cortar", "Cut")));
+    let button = theme::primary_button(ui, closed, icons::CUT, tr("Cortar", "Cut"));
     actions.cut = button.on_disabled_hover_text(tr("La malla debe ser cerrada", "The mesh must be closed")).clicked();
 
     ui.separator();
@@ -2033,7 +2095,7 @@ fn cut_section(ui: &mut egui::Ui, app: &mut App, actions: &mut UiActions, i: usi
     } else {
         (format!("{}…", tr("Exportar sección", "Export section")), has_section)
     };
-    let button = ui.add_enabled(enabled, egui::Button::new(label));
+    let button = theme::button(ui, enabled, icons::SECTION, &label);
     actions.export_section = button.on_disabled_hover_text(tr("El plano no atraviesa el objeto", "The plane does not cross the object")).clicked();
     ui.weak(tr(
         "Guarda el contorno de la sección en SVG o DXF (mm, en los ejes del plano). Varias secciones van en archivos numerados.",

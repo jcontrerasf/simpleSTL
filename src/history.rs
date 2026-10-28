@@ -31,6 +31,14 @@ impl<T> History<T> {
         Some(previous)
     }
 
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
     /// Devuelve el estado siguiente; `current` pasa a poder deshacerse.
     pub fn redo(&mut self, current: T) -> Option<T> {
         let next = self.redo.pop()?;
