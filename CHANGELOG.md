@@ -1,6 +1,6 @@
 # Cambios
 
-## [Sin publicar]
+## [0.3.0] - 2026-10-27
 
 ### Nuevo
 

@@ -27,7 +27,8 @@ herramientas, un cubo de navegación y un panel lateral con la lista de objetos.
   - **Mover**, **Rotar** y **Escalar** con un manipulador por eje. Escalar también
     admite porcentaje o medida objetivo, con o sin escala uniforme.
   - **Corte** con un plano que se desplaza e inclina gráficamente. Las dos mitades
-    quedan cerradas.
+    quedan cerradas. La sección se puede exportar en SVG o DXF, también como varias
+    capas paralelas.
   - **Booleana**: unión, resta e intersección entre dos objetos.
   - **Apoyar en cara**: resalta las caras planas estables. Al hacer clic en una, la
     pieza queda apoyada en el suelo y alineada con los ejes.
